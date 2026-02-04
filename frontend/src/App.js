@@ -1,19 +1,39 @@
 import React, { useEffect, useState, useRef } from "react";
 import "./App.css";
-import LiveHeatmap from "./LiveHeatmap";
 import axios from "axios";
 
 function App() {
   const [detected, setDetected] = useState([]);
+  const [counts, setCounts] = useState({});
   const [soundEnabled, setSoundEnabled] = useState(false);
   const audioRef = useRef(null);
   const previousDetectedRef = useRef([]);
+  const ipCameraStreamUrl = "http://192.0.0.4:8080/video";
+  const dangerousAnimals = [
+    "tiger",
+    "leopard",
+    "lion",
+    "bear",
+    "elephant",
+    "wild boar",
+    "boar",
+    "wolf",
+    "panther",
+    "crocodile",
+    "rhino",
+    "hippo",
+    "snake",
+  ];
+  const isDangerous = detected.some((animal) =>
+    dangerousAnimals.includes(String(animal).toLowerCase())
+  );
 
   useEffect(() => {
     const fetchDetection = async () => {
       try {
         const res = await axios.get("http://localhost:5000/detect");
         const newDetected = res.data.detected || [];
+        const newCounts = res.data.counts || {};
 
         const prevDetected = previousDetectedRef.current;
         const newAnimals = newDetected.filter(
@@ -23,6 +43,7 @@ function App() {
         if (newAnimals.length > 0) {
           setDetected((prev) => [...prev, ...newAnimals]);
           previousDetectedRef.current = [...prevDetected, ...newAnimals];
+          setCounts((prev) => ({ ...prev, ...newCounts }));
 
           // Play alert sound if user has enabled sound
           if (soundEnabled && audioRef.current) {
@@ -103,25 +124,71 @@ function App() {
               <div className="alert-box">Video Stream</div>
               <div style={{ position: "relative" }}>
                 <div className="live-badge">LIVE</div>
-                <video
+                <img
+                  alt="IP Camera Feed"
                   className="video-box"
-                  autoPlay
-                  loop
-                  muted
-                  playsInline
-                  controls
-                  style={{ width: "100%", height: "auto", borderRadius: "15px" }}
-                >
-                  <source src="http://localhost:5000/video" type="video/mp4" />
-                  Your browser does not support the video tag.
-                </video>
+                  src={ipCameraStreamUrl}
+                  style={{
+                    width: "100%",
+                    height: "360px",
+                    borderRadius: "15px",
+                    border: "none",
+                    background: "#000",
+                    objectFit: "contain",
+                  }}
+                />
               </div>
             </div>
 
             <div className="risk-prediction">
-              <h3>Risk Prediction</h3>
-              <div className="alert-box">Heat Map</div>
-              <LiveHeatmap />
+              <h3>Village & Crop Safety</h3>
+              {detected.length === 0 ? (
+                <div className="alert-box">Monitoring...</div>
+              ) : (
+                <>
+                  <div className="alert-box danger">Animal Detected</div>
+                  <div className="detected-name" style={{ fontWeight: "bold", marginBottom: "8px" }}>
+                    {detected.map((animal, index) => (
+                      <div key={index}>▶ {animal}</div>
+                    ))}
+                  </div>
+                  {Object.keys(counts).length > 0 && (
+                    <div>
+                      <div style={{ fontWeight: "bold", marginBottom: "6px" }}>Detection Chart</div>
+                      {Object.entries(counts).map(([label, count]) => {
+                        const width = Math.min(100, count * 12);
+                        return (
+                          <div key={label} style={{ display: "flex", alignItems: "center", marginBottom: "6px" }}>
+                            <div style={{ width: "90px", fontSize: "12px" }}>{label}</div>
+                            <div style={{ flex: 1, background: "#f1f1f1", borderRadius: "6px", overflow: "hidden" }}>
+                              <div
+                                style={{
+                                  width: `${width}%`,
+                                  background: "#2f60ff",
+                                  color: "#fff",
+                                  padding: "4px 6px",
+                                  fontSize: "12px",
+                                }}
+                              >
+                                {count}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {isDangerous ? (
+                    <div className="alert-box danger" style={{ marginTop: "10px" }}>
+                      Dangerous Animal Detected
+                    </div>
+                  ) : (
+                    <div className="alert-box" style={{ marginTop: "10px" }}>
+                      Not Dangerous
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         </div>
