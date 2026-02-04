@@ -5,6 +5,8 @@ import axios from "axios";
 function App() {
   const [detected, setDetected] = useState([]);
   const [counts, setCounts] = useState({});
+  const [audioDetected, setAudioDetected] = useState([]);
+  const [audioScores, setAudioScores] = useState({});
   const [soundEnabled, setSoundEnabled] = useState(false);
   const audioRef = useRef(null);
   const previousDetectedRef = useRef([]);
@@ -62,6 +64,25 @@ function App() {
 
     return () => clearInterval(interval);
   }, [soundEnabled]); // re-run when soundEnabled changes
+
+  useEffect(() => {
+    const fetchAudioDetection = async () => {
+      try {
+        const res = await axios.get("http://localhost:5000/audio_detect");
+        const newAudioDetected = res.data.detected || [];
+        const newAudioScores = res.data.scores || {};
+        setAudioDetected(newAudioDetected);
+        setAudioScores(newAudioScores);
+      } catch (err) {
+        console.error("❌ Audio detection error:", err);
+      }
+    };
+
+    fetchAudioDetection();
+    const interval = setInterval(fetchAudioDetection, 10000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   const handleEnableSound = () => {
     if (audioRef.current) {
@@ -190,6 +211,49 @@ function App() {
                 </>
               )}
             </div>
+          </div>
+
+          <div className="section">
+            <h3>Audio Detection (IP Camera)</h3>
+            {audioDetected.length === 0 ? (
+              <div className="alert-box">Listening...</div>
+            ) : (
+              <>
+                <div className="alert-box danger">Animal Detected (Audio)</div>
+                <div className="detected-name" style={{ fontWeight: "bold", marginBottom: "8px" }}>
+                  {audioDetected.map((animal, index) => (
+                    <div key={index}>▶ {animal}</div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {Object.keys(audioScores).length > 0 && (
+              <div style={{ marginTop: "10px" }}>
+                <div style={{ fontWeight: "bold", marginBottom: "6px" }}>Audio Detection Chart</div>
+                {Object.entries(audioScores).map(([label, score]) => {
+                  const width = Math.min(100, Math.round(score * 100));
+                  return (
+                    <div key={label} style={{ display: "flex", alignItems: "center", marginBottom: "6px" }}>
+                      <div style={{ width: "90px", fontSize: "12px" }}>{label}</div>
+                      <div style={{ flex: 1, background: "#f1f1f1", borderRadius: "6px", overflow: "hidden" }}>
+                        <div
+                          style={{
+                            width: `${width}%`,
+                            background: "#2f60ff",
+                            color: "#fff",
+                            padding: "4px 6px",
+                            fontSize: "12px",
+                          }}
+                        >
+                          {Math.round(score * 100)}%
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>
