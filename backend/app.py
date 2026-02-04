@@ -6,16 +6,10 @@ import tempfile
 import subprocess
 import wave
 import numpy as np
-import tensorflow as tf
-import tensorflow_hub as hub
-import csv
 import sounddevice as sd
+import librosa
+import urllib.request
 from flask_cors import CORS
-
-# Ensure TFHub cache is a valid directory inside this backend folder
-TFHUB_CACHE_DIR = os.path.join(os.path.dirname(__file__), "tfhub_cache")
-os.makedirs(TFHUB_CACHE_DIR, exist_ok=True)
-os.environ["TFHUB_CACHE_DIR"] = TFHUB_CACHE_DIR
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
@@ -29,36 +23,65 @@ ip_camera_url = "http://192.0.0.4:8080/video"
 # IP camera audio stream (set to your camera's audio/rtsp stream if different)
 ip_camera_audio_url = os.getenv("IP_CAMERA_AUDIO_URL", "")
 
-# Load YAMNet for audio classification (pretrained on AudioSet)
-yamnet_model = hub.load("https://tfhub.dev/google/yamnet/1")
+# PANNs assets
+PANNS_DATA_DIR = os.path.join(os.path.expanduser("~"), "panns_data")
+PANNS_LABELS_PATH = os.path.join(PANNS_DATA_DIR, "class_labels_indices.csv")
+# Use a separate filename to avoid conflicts with partially locked downloads
+PANNS_CHECKPOINT_PATH = os.path.join(PANNS_DATA_DIR, "Cnn14_mAP=0.431.pth.bin")
+PANNS_LABELS_URL = "https://raw.githubusercontent.com/qiuqiangkong/audioset_tagging_cnn/master/metadata/class_labels_indices.csv"
+PANNS_CHECKPOINT_URL = "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1"
+PANNS_MIN_BYTES = 300_000_000  # Cnn14 checkpoint is large; re-download if smaller than 300MB
 
-def class_names_from_csv(class_map_csv_text):
-    class_names = []
-    with tf.io.gfile.GFile(class_map_csv_text) as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            class_names.append(row["display_name"])
-    return class_names
+def download_file(url, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    urllib.request.urlretrieve(url, path)
 
-yamnet_class_map_path = yamnet_model.class_map_path().numpy()
-yamnet_class_names = class_names_from_csv(yamnet_class_map_path)
+def get_remote_size(url):
+    try:
+        with urllib.request.urlopen(url) as response:
+            length = response.headers.get("Content-Length")
+            return int(length) if length else None
+    except Exception:
+        return None
+
+def ensure_panns_assets():
+    os.makedirs(PANNS_DATA_DIR, exist_ok=True)
+    if not os.path.exists(PANNS_LABELS_PATH):
+        download_file(PANNS_LABELS_URL, PANNS_LABELS_PATH)
+    expected_size = get_remote_size(PANNS_CHECKPOINT_URL)
+    if os.path.exists(PANNS_CHECKPOINT_PATH):
+        local_size = os.path.getsize(PANNS_CHECKPOINT_PATH)
+        min_size = expected_size if expected_size else PANNS_MIN_BYTES
+        if local_size < min_size:
+            try:
+                os.remove(PANNS_CHECKPOINT_PATH)
+            except OSError:
+                pass
+    if not os.path.exists(PANNS_CHECKPOINT_PATH):
+        download_file(PANNS_CHECKPOINT_URL, PANNS_CHECKPOINT_PATH)
+
+ensure_panns_assets()
+
+# Load PANNs audio tagging model (AudioSet pretrained)
+from panns_inference import AudioTagging, labels as panns_labels
+audio_tagger = AudioTagging(checkpoint_path=PANNS_CHECKPOINT_PATH, device="cpu")
 
 TARGET_KEYWORDS = {
-    "lion": ["roaring cats", "roar", "growl"],
-    "tiger": ["roaring cats", "roar", "growl"],
-    "cheetah": ["roaring cats", "cat", "growl"],
+    "lion": ["roar", "roaring", "growl", "big cat", "animal"],
+    "tiger": ["roar", "roaring", "growl", "big cat", "animal"],
+    "cheetah": ["cat", "growl", "animal"],
     "cat": ["cat", "meow", "purr"],
     "dog": ["dog", "bark", "growl"],
-    "human": ["human voice", "speech", "scream", "shout"],
+    "human": ["speech", "human", "scream", "shout"],
     "cow": ["cattle", "cow", "moo"],
-    "deer": ["deer"],
+    "deer": ["deer", "animal"],
 }
 
 def build_target_indices():
     indices = {}
     for target, keywords in TARGET_KEYWORDS.items():
         idxs = []
-        for i, name in enumerate(yamnet_class_names):
+        for i, name in enumerate(panns_labels):
             lname = name.lower()
             if any(k in lname for k in keywords):
                 idxs.append(i)
@@ -67,7 +90,7 @@ def build_target_indices():
 
 target_indices = build_target_indices()
 
-def capture_audio_wav(url, seconds=3):
+def capture_audio_wav(url, seconds=6, sample_rate=32000):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     tmp.close()
     cmd = [
@@ -80,7 +103,7 @@ def capture_audio_wav(url, seconds=3):
         "-ac",
         "1",
         "-ar",
-        "16000",
+        str(sample_rate),
         "-f",
         "wav",
         tmp.name,
@@ -90,7 +113,7 @@ def capture_audio_wav(url, seconds=3):
         raise RuntimeError(result.stderr.decode("utf-8", errors="ignore")[-400:])
     return tmp.name
 
-def capture_audio_mic(seconds=3, sample_rate=16000):
+def capture_audio_mic(seconds=6, sample_rate=32000):
     audio = sd.rec(int(seconds * sample_rate), samplerate=sample_rate, channels=1, dtype="int16")
     sd.wait()
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
@@ -111,15 +134,15 @@ def load_waveform(wav_path):
     return sample_rate, waveform
 
 def infer_audio(waveform):
-    scores, embeddings, spectrogram = yamnet_model(waveform)
-    scores_np = scores.numpy()
-    frame_max = np.max(scores_np, axis=0)
-    frame_mean = np.mean(scores_np, axis=0)
-    combined = (0.7 * frame_max) + (0.3 * frame_mean)
+    # PANNs expects shape (batch, samples) at 32kHz
+    if waveform.ndim == 1:
+        waveform = waveform[None, :]
+    (clipwise_output, embedding) = audio_tagger.inference(waveform)
+    scores_np = clipwise_output[0]
     target_scores = {}
     for target, idxs in target_indices.items():
         if idxs:
-            target_scores[target] = float(np.max(combined[idxs]))
+            target_scores[target] = float(np.max(scores_np[idxs]))
         else:
             target_scores[target] = 0.0
     return target_scores
@@ -167,18 +190,18 @@ def detect_from_video():
 
 @app.route("/audio_detect", methods=["GET"])
 def detect_from_audio():
-    seconds = int(request.args.get("seconds", 6))
-    threshold = float(request.args.get("threshold", 0.12))
+    seconds = int(request.args.get("seconds", 8))
+    threshold = float(request.args.get("threshold", 0.18))
     try:
         # Use laptop mic if no IP camera audio URL is set
         if not ip_camera_audio_url:
-            wav_path = capture_audio_mic(seconds=seconds)
+            wav_path = capture_audio_mic(seconds=seconds, sample_rate=32000)
         else:
-            wav_path = capture_audio_wav(ip_camera_audio_url, seconds=seconds)
+            wav_path = capture_audio_wav(ip_camera_audio_url, seconds=seconds, sample_rate=32000)
         sample_rate, waveform = load_waveform(wav_path)
         os.unlink(wav_path)
-        if sample_rate != 16000:
-            return jsonify({"status": "error", "message": "Audio sample rate is not 16kHz"}), 500
+        if sample_rate != 32000:
+            waveform = librosa.resample(waveform, orig_sr=sample_rate, target_sr=32000)
         scores = infer_audio(waveform)
         detected = [k for k, v in scores.items() if v >= threshold]
         detected_sorted = sorted(detected, key=lambda k: scores[k], reverse=True)
@@ -196,4 +219,5 @@ def serve_video():
     return send_from_directory("static", video_filename)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Disable reloader to avoid Windows watchdog/socket issues with large ML deps
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
