@@ -4,11 +4,15 @@ import cv2
 import os
 import tempfile
 import subprocess
+import time
 import wave
 import numpy as np
 import sounddevice as sd
 import librosa
 import urllib.request
+import json
+import torch
+import torch.nn as nn
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder="static")
@@ -18,7 +22,7 @@ CORS(app)
 model = YOLO(os.path.join("yolov8", "best.pt"))
 
 # IP camera stream (update if your camera uses a different path)
-ip_camera_url = "http://192.0.0.4:8080/video"
+ip_camera_url = "http://100.104.143.1:8080/video"
 
 # IP camera audio stream (set to your camera's audio/rtsp stream if different)
 ip_camera_audio_url = os.getenv("IP_CAMERA_AUDIO_URL", "")
@@ -65,6 +69,47 @@ ensure_panns_assets()
 # Load PANNs audio tagging model (AudioSet pretrained)
 from panns_inference import AudioTagging, labels as panns_labels
 audio_tagger = AudioTagging(checkpoint_path=PANNS_CHECKPOINT_PATH, device="cpu")
+
+MODEL_PATH = r"E:\\datasets\\audio_datasets\\models\\audio_classifier.pth"
+LABELS_PATH = r"E:\\datasets\\audio_datasets\\models\\labels.json"
+
+class MLP(nn.Module):
+    def __init__(self, in_dim, num_classes):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+USE_FINETUNED_AUDIO = False
+audio_classifier = None
+audio_labels = None
+
+def load_audio_classifier():
+    global audio_classifier, audio_labels
+    if not (os.path.exists(MODEL_PATH) and os.path.exists(LABELS_PATH)):
+        return
+    with open(LABELS_PATH, "r", encoding="utf-8") as f:
+        audio_labels = json.load(f)
+    # Infer embedding size from a dummy 10s input
+    dummy = np.zeros((1, 32000 * 10), dtype=np.float32)
+    _, embedding = audio_tagger.inference(dummy)
+    emb = embedding[0]
+    if emb.ndim > 1:
+        emb = emb.mean(axis=0)
+    audio_classifier = MLP(emb.shape[0], len(audio_labels))
+    audio_classifier.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+    audio_classifier.eval()
+
+load_audio_classifier()
 
 TARGET_KEYWORDS = {
     "lion": ["roar", "roaring", "growl", "big cat", "animal"],
@@ -134,7 +179,20 @@ def load_waveform(wav_path):
     return sample_rate, waveform
 
 def infer_audio(waveform):
-    # PANNs expects shape (batch, samples) at 32kHz
+    # If fine-tuned classifier is available, use it
+    if USE_FINETUNED_AUDIO and audio_classifier is not None and audio_labels is not None:
+        if waveform.ndim == 1:
+            waveform = waveform[None, :]
+        _, embedding = audio_tagger.inference(waveform)
+        emb = embedding[0]
+        if emb.ndim > 1:
+            emb = emb.mean(axis=0)
+        with torch.no_grad():
+            logits = audio_classifier(torch.from_numpy(emb).unsqueeze(0))
+            probs = torch.softmax(logits, dim=1).squeeze(0).numpy()
+        return {audio_labels[str(i)]: float(probs[i]) for i in range(len(probs))}
+
+    # Fallback to generic AudioSet scores
     if waveform.ndim == 1:
         waveform = waveform[None, :]
     (clipwise_output, embedding) = audio_tagger.inference(waveform)
@@ -153,8 +211,17 @@ video_path = os.path.join("static", video_filename)
 
 @app.route("/detect", methods=["GET"])
 def detect_from_video():
-    # Read directly from the IP camera stream
-    cap = cv2.VideoCapture(ip_camera_url, cv2.CAP_FFMPEG)
+    # Read directly from the IP camera stream with timeouts
+    cap = cv2.VideoCapture()
+    try:
+        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
+        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000)
+    except Exception:
+        pass
+    cap.open(ip_camera_url, cv2.CAP_FFMPEG)
+    if not cap.isOpened():
+        cap.release()
+        cap = cv2.VideoCapture(ip_camera_url)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     detected_classes = set()
     class_counts = {}
@@ -166,7 +233,11 @@ def detect_from_video():
         }), 500
 
     frame_count = 0
+    max_wait_seconds = 6
+    start_time = time.time()
     while frame_count < 5:  # Process only 5 frames for speed
+        if time.time() - start_time > max_wait_seconds:
+            break
         ret, frame = cap.read()
         if not ret:
             break
@@ -181,17 +252,26 @@ def detect_from_video():
         frame_count += 1
 
     cap.release()
+    if frame_count == 0:
+        return jsonify({
+            "status": "error",
+            "message": "No frames received from IP camera stream: " + ip_camera_url
+        }), 500
+
+    video_scores = {label: count / frame_count for label, count in class_counts.items()}
 
     return jsonify({
         "status": "success",
         "detected": list(detected_classes),
-        "counts": class_counts
+        "counts": class_counts,
+        "scores": video_scores,
+        "frames": frame_count
     })
 
 @app.route("/audio_detect", methods=["GET"])
 def detect_from_audio():
     seconds = int(request.args.get("seconds", 8))
-    threshold = float(request.args.get("threshold", 0.18))
+    threshold = float(request.args.get("threshold", 0.08))
     try:
         # Use laptop mic if no IP camera audio URL is set
         if not ip_camera_audio_url:
@@ -202,7 +282,17 @@ def detect_from_audio():
         os.unlink(wav_path)
         if sample_rate != 32000:
             waveform = librosa.resample(waveform, orig_sr=sample_rate, target_sr=32000)
+        # Pad/crop to 10 seconds for PANNs
+        target_len = 32000 * 10
+        if len(waveform) < target_len:
+            waveform = np.pad(waveform, (0, target_len - len(waveform)))
+        elif len(waveform) > target_len:
+            waveform = waveform[:target_len]
         scores = infer_audio(waveform)
+        # Disable human completely from audio results
+        if "human" in scores:
+            scores.pop("human", None)
+
         detected = [k for k, v in scores.items() if v >= threshold]
         detected_sorted = sorted(detected, key=lambda k: scores[k], reverse=True)
         return jsonify({

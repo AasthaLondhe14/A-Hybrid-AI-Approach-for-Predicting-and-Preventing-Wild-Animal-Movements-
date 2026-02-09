@@ -5,12 +5,13 @@ import axios from "axios";
 function App() {
   const [detected, setDetected] = useState([]);
   const [counts, setCounts] = useState({});
+  const [videoScores, setVideoScores] = useState({});
   const [audioDetected, setAudioDetected] = useState([]);
   const [audioScores, setAudioScores] = useState({});
   const [soundEnabled, setSoundEnabled] = useState(false);
   const audioRef = useRef(null);
   const previousDetectedRef = useRef([]);
-  const ipCameraStreamUrl = "http://192.0.0.4:8080/video";
+  const ipCameraStreamUrl = "http://100.104.143.1:8080/video";
   const dangerousAnimals = [
     "tiger",
     "leopard",
@@ -29,30 +30,74 @@ function App() {
   const isDangerous = detected.some((animal) =>
     dangerousAnimals.includes(String(animal).toLowerCase())
   );
+  const onlyHumanDetected =
+    detected.length > 0 &&
+    detected.every((animal) => String(animal).toLowerCase() === "human");
+  const nonHumanDetected = detected.filter(
+    (animal) => String(animal).toLowerCase() !== "human"
+  );
+  const animalDetected = nonHumanDetected.length > 0;
+  const TOP_K = 3;
+  const cleanLabel = (label) => String(label).toLowerCase();
+  const isHuman = (label) => cleanLabel(label) === "human";
+  const MIN_VIDEO_SCORE = 0.15;
+  const MIN_AUDIO_SCORE = 0.06;
+  const topVideo = Object.entries(videoScores)
+    .filter(([label, score]) => !isHuman(label) && (score ?? 0) >= MIN_VIDEO_SCORE)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+    .slice(0, TOP_K)
+    .map(([label]) => label);
+  const topAudio = Object.entries(audioScores)
+    .filter(([label, score]) => !isHuman(label) && (score ?? 0) >= MIN_AUDIO_SCORE)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+    .slice(0, TOP_K)
+    .map(([label]) => label);
+  const intersection = topVideo.filter((a) =>
+    topAudio.some((b) => cleanLabel(b) === cleanLabel(a))
+  );
+  const finalIntersection = intersection.sort((a, b) => {
+    const scoreA = Math.max(videoScores[a] ?? 0, audioScores[a] ?? 0);
+    const scoreB = Math.max(videoScores[b] ?? 0, audioScores[b] ?? 0);
+    return scoreB - scoreA;
+  });
+  const finalWinner = finalIntersection.length > 0 ? finalIntersection[0] : null;
+  const topAudioLabels = Object.entries(audioScores)
+    .filter(([label]) => !isHuman(label))
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+    .slice(0, 3)
+    .map(([label, score]) => `${label} (${Math.round((score ?? 0) * 100)}%)`);
+
+  const finalIsDangerous = finalIntersection.some((animal) =>
+    dangerousAnimals.includes(String(animal).toLowerCase())
+  );
+  const audioDangerousHigh = Object.entries(audioScores).some(
+    ([label, score]) =>
+      dangerousAnimals.includes(String(label).toLowerCase()) && score >= 0.8
+  );
+  const shouldAlert = isDangerous || finalIsDangerous || audioDangerousHigh;
+  const lastAlertRef = useRef(false);
 
   useEffect(() => {
     const fetchDetection = async () => {
       try {
         const res = await axios.get("http://localhost:5000/detect");
-        const newDetected = res.data.detected || [];
-        const newCounts = res.data.counts || {};
+        const isSuccess = res.data.status === "success";
+        const newDetected = isSuccess ? (res.data.detected || []) : [];
+        const newCounts = isSuccess ? (res.data.counts || {}) : {};
+        const newScores = isSuccess ? (res.data.scores || {}) : {};
 
         const prevDetected = previousDetectedRef.current;
         const newAnimals = newDetected.filter(
           (animal) => !prevDetected.includes(animal)
         );
 
-        if (newAnimals.length > 0) {
-          setDetected((prev) => [...prev, ...newAnimals]);
-          previousDetectedRef.current = [...prevDetected, ...newAnimals];
-          setCounts((prev) => ({ ...prev, ...newCounts }));
+        setDetected(newDetected);
+        setCounts(newCounts);
+        setVideoScores(newScores);
+        previousDetectedRef.current = newDetected;
 
-          // Play alert sound if user has enabled sound
-          if (soundEnabled && audioRef.current) {
-            audioRef.current.play().catch((e) => {
-              console.warn("🔇 Autoplay blocked or user interaction required.");
-            });
-          }
+        if (newAnimals.length > 0) {
+          // keep newAnimals for future use if needed
         }
       } catch (err) {
         console.error("❌ Detection error:", err);
@@ -83,6 +128,16 @@ function App() {
 
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!soundEnabled || !audioRef.current) return;
+    if (shouldAlert && !lastAlertRef.current) {
+      audioRef.current.play().catch(() => {
+        console.warn("🔇 User interaction required to play audio.");
+      });
+    }
+    lastAlertRef.current = shouldAlert;
+  }, [shouldAlert, soundEnabled]);
 
   const handleEnableSound = () => {
     if (audioRef.current) {
@@ -125,17 +180,19 @@ function App() {
               </button>
             )}
 
-            {detected.length > 0 ? (
+            {animalDetected ? (
               <>
                 <div className="alert-box danger">⚠ Animal Detected</div>
                 <div className="detected-name" style={{ fontWeight: "bold" }}>
-                  {detected.map((animal, index) => (
+                  {nonHumanDetected.map((animal, index) => (
                     <div key={index}>🔸 {animal}</div>
                   ))}
                 </div>
               </>
             ) : (
-              <div className="alert-box">🔄 Detecting...</div>
+              <div className="alert-box">
+                {onlyHumanDetected ? "✅ No animal detected (human only)" : "🔄 Detecting..."}
+              </div>
             )}
           </div>
 
@@ -163,20 +220,22 @@ function App() {
 
             <div className="risk-prediction">
               <h3>Village & Crop Safety</h3>
-              {detected.length === 0 ? (
+              {animalDetected === false ? (
                 <div className="alert-box">Monitoring...</div>
               ) : (
                 <>
                   <div className="alert-box danger">Animal Detected</div>
                   <div className="detected-name" style={{ fontWeight: "bold", marginBottom: "8px" }}>
-                    {detected.map((animal, index) => (
-                      <div key={index}>▶ {animal}</div>
+                    {topVideo.map((animal, index) => (
+                      <div key={index}>▶ {animal} ({Math.round((videoScores[animal] ?? 0) * 100)}%)</div>
                     ))}
                   </div>
                   {Object.keys(counts).length > 0 && (
                     <div>
                       <div style={{ fontWeight: "bold", marginBottom: "6px" }}>Detection Chart</div>
-                      {Object.entries(counts).map(([label, count]) => {
+                      {Object.entries(counts)
+                        .filter(([label]) => !isHuman(label))
+                        .map(([label, count]) => {
                         const width = Math.min(100, count * 12);
                         return (
                           <div key={label} style={{ display: "flex", alignItems: "center", marginBottom: "6px" }}>
@@ -216,13 +275,25 @@ function App() {
           <div className="section">
             <h3>Audio Detection (IP Camera)</h3>
             {audioDetected.length === 0 ? (
-              <div className="alert-box">Listening...</div>
+              <>
+                <div className="alert-box">Listening...</div>
+                {topAudioLabels.length > 0 && (
+                  <div className="alert-box">
+                    Top 3: [{topAudioLabels.join(", ")}]
+                  </div>
+                )}
+              </>
             ) : (
               <>
                 <div className="alert-box danger">Animal Detected (Audio)</div>
+                {topAudioLabels.length > 0 && (
+                  <div className="alert-box">
+                    Top 3: [{topAudioLabels.join(", ")}]
+                  </div>
+                )}
                 <div className="detected-name" style={{ fontWeight: "bold", marginBottom: "8px" }}>
                   {audioDetected.map((animal, index) => (
-                    <div key={index}>▶ {animal}</div>
+                    <div key={index}>▶ {animal} ({Math.round((audioScores[animal] ?? 0) * 100)}%)</div>
                   ))}
                 </div>
               </>
@@ -253,6 +324,20 @@ function App() {
                   );
                 })}
               </div>
+            )}
+          </div>
+
+          <div className="section">
+            <h3>Final Detection</h3>
+            {finalWinner === null ? (
+              <div className="alert-box">Waiting for detection...</div>
+            ) : (
+              <>
+                <div className="alert-box danger">Final Detection</div>
+                <div className="detected-name" style={{ fontWeight: "bold", marginBottom: "8px" }}>
+                  <div>▶ {finalWinner}</div>
+                </div>
+              </>
             )}
           </div>
         </div>
