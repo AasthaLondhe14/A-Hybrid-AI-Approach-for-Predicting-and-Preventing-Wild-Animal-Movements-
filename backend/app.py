@@ -19,13 +19,13 @@ app = Flask(__name__, static_folder="static")
 CORS(app)
 
 # Load YOLOv8 model
-model = YOLO(os.path.join("yolov8", "best.pt"))
+model = YOLO(os.path.join("yolov8", "bestR.pt"))
 
 # IP camera stream (update if your camera uses a different path)
-ip_camera_url = "http://100.104.143.1:8080/video"
+ip_camera_url = "http://192.0.0.4:8080/video"
 
 # IP camera audio stream (set to your camera's audio/rtsp stream if different)
-ip_camera_audio_url = os.getenv("IP_CAMERA_AUDIO_URL", "")
+ip_camera_audio_url = "http://192.0.0.4:8080/audio.wav"
 
 # PANNs assets
 PANNS_DATA_DIR = os.path.join(os.path.expanduser("~"), "panns_data")
@@ -70,8 +70,8 @@ ensure_panns_assets()
 from panns_inference import AudioTagging, labels as panns_labels
 audio_tagger = AudioTagging(checkpoint_path=PANNS_CHECKPOINT_PATH, device="cpu")
 
-MODEL_PATH = r"E:\\datasets\\audio_datasets\\models\\audio_classifier.pth"
-LABELS_PATH = r"E:\\datasets\\audio_datasets\\models\\labels.json"
+MODEL_PATH = r"E:\\aound_dataset_anki\\audio_classifier (1).pth"
+LABELS_PATH = r"E:\\aound_dataset_anki\\labels (1).json"
 
 class MLP(nn.Module):
     def __init__(self, in_dim, num_classes):
@@ -89,7 +89,7 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-USE_FINETUNED_AUDIO = False
+USE_FINETUNED_AUDIO = True
 audio_classifier = None
 audio_labels = None
 
@@ -225,6 +225,9 @@ def detect_from_video():
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     detected_classes = set()
     class_counts = {}
+    class_max_conf = {}
+    min_conf = float(request.args.get("min_conf", 0.6))
+    min_count = int(request.args.get("min_count", 2))
 
     if not cap.isOpened():
         return jsonify({
@@ -244,10 +247,14 @@ def detect_from_video():
 
         results = model(frame)[0]
         for box in results.boxes:
+            conf = float(box.conf[0]) if hasattr(box, "conf") else 1.0
+            if conf < min_conf:
+                continue
             cls_id = int(box.cls[0])
             label = model.names[cls_id]
             detected_classes.add(label)
             class_counts[label] = class_counts.get(label, 0) + 1
+            class_max_conf[label] = max(class_max_conf.get(label, 0.0), conf)
 
         frame_count += 1
 
@@ -258,12 +265,15 @@ def detect_from_video():
             "message": "No frames received from IP camera stream: " + ip_camera_url
         }), 500
 
-    video_scores = {label: count / frame_count for label, count in class_counts.items()}
+    # Filter out single-frame flickers/false positives
+    filtered_counts = {k: v for k, v in class_counts.items() if v >= min_count}
+    filtered_counts = {k: v for k, v in filtered_counts.items() if class_max_conf.get(k, 0.0) >= min_conf}
+    video_scores = {label: count / frame_count for label, count in filtered_counts.items()}
 
     return jsonify({
         "status": "success",
-        "detected": list(detected_classes),
-        "counts": class_counts,
+        "detected": list(filtered_counts.keys()),
+        "counts": filtered_counts,
         "scores": video_scores,
         "frames": frame_count
     })
@@ -272,6 +282,8 @@ def detect_from_video():
 def detect_from_audio():
     seconds = int(request.args.get("seconds", 8))
     threshold = float(request.args.get("threshold", 0.08))
+    silence_rms = float(request.args.get("silence_rms", 0.03))
+    min_top_score = float(request.args.get("min_top_score", 0.15))
     try:
         # Use laptop mic if no IP camera audio URL is set
         if not ip_camera_audio_url:
@@ -288,10 +300,38 @@ def detect_from_audio():
             waveform = np.pad(waveform, (0, target_len - len(waveform)))
         elif len(waveform) > target_len:
             waveform = waveform[:target_len]
+
+        # Silence gate: when near-silent, return zero scores
+        rms = float(np.sqrt(np.mean(np.square(waveform))))
+        if rms < silence_rms:
+            # Return explicit zeros for all labels when silent
+            if audio_labels is not None:
+                zero_scores = {audio_labels[str(i)]: 0.0 for i in range(len(audio_labels))}
+            else:
+                zero_scores = {}
+            return jsonify({
+                "status": "success",
+                "detected": [],
+                "scores": zero_scores
+            })
+
         scores = infer_audio(waveform)
         # Disable human completely from audio results
         if "human" in scores:
             scores.pop("human", None)
+
+        # If nothing is confidently animal-like, zero everything
+        max_score = max(scores.values(), default=0.0)
+        if max_score < min_top_score:
+            if audio_labels is not None:
+                zero_scores = {audio_labels[str(i)]: 0.0 for i in range(len(audio_labels))}
+            else:
+                zero_scores = {k: 0.0 for k in scores.keys()}
+            return jsonify({
+                "status": "success",
+                "detected": [],
+                "scores": zero_scores
+            })
 
         detected = [k for k, v in scores.items() if v >= threshold]
         detected_sorted = sorted(detected, key=lambda k: scores[k], reverse=True)

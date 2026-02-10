@@ -11,7 +11,7 @@ function App() {
   const [soundEnabled, setSoundEnabled] = useState(false);
   const audioRef = useRef(null);
   const previousDetectedRef = useRef([]);
-  const ipCameraStreamUrl = "http://100.104.143.1:8080/video";
+  const ipCameraStreamUrl = "http://192.0.0.4:8080/video";
   const dangerousAnimals = [
     "tiger",
     "leopard",
@@ -33,10 +33,14 @@ function App() {
   const onlyHumanDetected =
     detected.length > 0 &&
     detected.every((animal) => String(animal).toLowerCase() === "human");
+  const MIN_VIDEO_DISPLAY_SCORE = 0.6;
   const nonHumanDetected = detected.filter(
     (animal) => String(animal).toLowerCase() !== "human"
   );
-  const animalDetected = nonHumanDetected.length > 0;
+  const videoDisplayAnimals = nonHumanDetected.filter(
+    (animal) => (videoScores[animal] ?? 0) >= MIN_VIDEO_DISPLAY_SCORE
+  );
+  const animalDetected = videoDisplayAnimals.length > 0;
   const TOP_K = 3;
   const cleanLabel = (label) => String(label).toLowerCase();
   const isHuman = (label) => cleanLabel(label) === "human";
@@ -52,24 +56,14 @@ function App() {
     .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
     .slice(0, TOP_K)
     .map(([label]) => label);
-  const intersection = topVideo.filter((a) =>
-    topAudio.some((b) => cleanLabel(b) === cleanLabel(a))
-  );
-  const finalIntersection = intersection.sort((a, b) => {
-    const scoreA = Math.max(videoScores[a] ?? 0, audioScores[a] ?? 0);
-    const scoreB = Math.max(videoScores[b] ?? 0, audioScores[b] ?? 0);
-    return scoreB - scoreA;
-  });
-  const finalWinner = finalIntersection.length > 0 ? finalIntersection[0] : null;
+  const finalWinner = null;
   const topAudioLabels = Object.entries(audioScores)
-    .filter(([label]) => !isHuman(label))
+    .filter(([label, score]) => !isHuman(label) && (score ?? 0) > 0)
     .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
     .slice(0, 3)
     .map(([label, score]) => `${label} (${Math.round((score ?? 0) * 100)}%)`);
 
-  const finalIsDangerous = finalIntersection.some((animal) =>
-    dangerousAnimals.includes(String(animal).toLowerCase())
-  );
+  const finalIsDangerous = false;
   const audioDangerousHigh = Object.entries(audioScores).some(
     ([label, score]) =>
       dangerousAnimals.includes(String(label).toLowerCase()) && score >= 0.8
@@ -184,14 +178,14 @@ function App() {
               <>
                 <div className="alert-box danger">⚠ Animal Detected</div>
                 <div className="detected-name" style={{ fontWeight: "bold" }}>
-                  {nonHumanDetected.map((animal, index) => (
+                  {videoDisplayAnimals.map((animal, index) => (
                     <div key={index}>🔸 {animal}</div>
                   ))}
                 </div>
               </>
             ) : (
               <div className="alert-box">
-                {onlyHumanDetected ? "✅ No animal detected (human only)" : "🔄 Detecting..."}
+                {onlyHumanDetected ? "Monitoring..." : "🔄 Detecting..."}
               </div>
             )}
           </div>
@@ -226,7 +220,7 @@ function App() {
                 <>
                   <div className="alert-box danger">Animal Detected</div>
                   <div className="detected-name" style={{ fontWeight: "bold", marginBottom: "8px" }}>
-                    {topVideo.map((animal, index) => (
+                    {videoDisplayAnimals.map((animal, index) => (
                       <div key={index}>▶ {animal} ({Math.round((videoScores[animal] ?? 0) * 100)}%)</div>
                     ))}
                   </div>
@@ -302,7 +296,9 @@ function App() {
             {Object.keys(audioScores).length > 0 && (
               <div style={{ marginTop: "10px" }}>
                 <div style={{ fontWeight: "bold", marginBottom: "6px" }}>Audio Detection Chart</div>
-                {Object.entries(audioScores).map(([label, score]) => {
+                {Object.entries(audioScores)
+                  .filter(([label, score]) => (score ?? 0) > 0)
+                  .map(([label, score]) => {
                   const width = Math.min(100, Math.round(score * 100));
                   return (
                     <div key={label} style={{ display: "flex", alignItems: "center", marginBottom: "6px" }}>
@@ -327,19 +323,6 @@ function App() {
             )}
           </div>
 
-          <div className="section">
-            <h3>Final Detection</h3>
-            {finalWinner === null ? (
-              <div className="alert-box">Waiting for detection...</div>
-            ) : (
-              <>
-                <div className="alert-box danger">Final Detection</div>
-                <div className="detected-name" style={{ fontWeight: "bold", marginBottom: "8px" }}>
-                  <div>▶ {finalWinner}</div>
-                </div>
-              </>
-            )}
-          </div>
         </div>
       </div>
     </div>
