@@ -14,6 +14,7 @@ import json
 import torch
 import torch.nn as nn
 from flask_cors import CORS
+from database import store_detection, get_detection_history
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
@@ -22,10 +23,10 @@ CORS(app)
 model = YOLO(os.path.join("yolov8", "bestR.pt"))
 
 # IP camera stream (update if your camera uses a different path)
-ip_camera_url = "http://192.0.0.4:8080/video"
+ip_camera_url = "http://100.106.20.13:8080/video"
 
 # IP camera audio stream (set to your camera's audio/rtsp stream if different)
-ip_camera_audio_url = "http://192.0.0.4:8080/audio.wav"
+ip_camera_audio_url = "http://100.106.20.13:8080/audio.wav"
 
 # PANNs assets
 PANNS_DATA_DIR = os.path.join(os.path.expanduser("~"), "panns_data")
@@ -70,8 +71,8 @@ ensure_panns_assets()
 from panns_inference import AudioTagging, labels as panns_labels
 audio_tagger = AudioTagging(checkpoint_path=PANNS_CHECKPOINT_PATH, device="cpu")
 
-MODEL_PATH = r"E:\\aound_dataset_anki\\audio_classifier (1).pth"
-LABELS_PATH = r"E:\\aound_dataset_anki\\labels (1).json"
+MODEL_PATH = r"E:\\datasets\\audio_datasets\\models\\audio_classifier.pth"
+LABELS_PATH = r"E:\\datasets\\audio_datasets\\models\\labels.json"
 
 class MLP(nn.Module):
     def __init__(self, in_dim, num_classes):
@@ -178,6 +179,19 @@ def load_waveform(wav_path):
         waveform = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
     return sample_rate, waveform
 
+
+def load_audio_file_to_waveform(file_path, target_sr=32000):
+    waveform, sample_rate = librosa.load(file_path, sr=None, mono=True)
+    if sample_rate != target_sr:
+        waveform = librosa.resample(waveform, orig_sr=sample_rate, target_sr=target_sr)
+    # Ensure fixed length (3 seconds default)
+    target_len = target_sr * 3
+    if len(waveform) < target_len:
+        waveform = np.pad(waveform, (0, target_len - len(waveform)))
+    elif len(waveform) > target_len:
+        waveform = waveform[:target_len]
+    return waveform
+
 def infer_audio(waveform):
     # If fine-tuned classifier is available, use it
     if USE_FINETUNED_AUDIO and audio_classifier is not None and audio_labels is not None:
@@ -209,6 +223,16 @@ def infer_audio(waveform):
 video_filename = "LionM.mp4"
 video_path = os.path.join("static", video_filename)
 
+# Dangerous animals list (used only for DB flag)
+DANGEROUS_ANIMALS = [
+    "tiger", "leopard", "lion", "bear", "elephant",
+    "wild boar", "boar", "wolf", "panther", "crocodile",
+    "rhino", "hippo", "snake"
+]
+
+def is_dangerous_animal(animal_name):
+    return any(dangerous in str(animal_name).lower() for dangerous in DANGEROUS_ANIMALS)
+
 @app.route("/detect", methods=["GET"])
 def detect_from_video():
     # Read directly from the IP camera stream with timeouts
@@ -226,8 +250,8 @@ def detect_from_video():
     detected_classes = set()
     class_counts = {}
     class_max_conf = {}
-    min_conf = float(request.args.get("min_conf", 0.6))
-    min_count = int(request.args.get("min_count", 2))
+    min_conf = float(request.args.get("min_conf", 0.85))
+    min_count = int(request.args.get("min_count", 4))
 
     if not cap.isOpened():
         return jsonify({
@@ -270,6 +294,10 @@ def detect_from_video():
     filtered_counts = {k: v for k, v in filtered_counts.items() if class_max_conf.get(k, 0.0) >= min_conf}
     video_scores = {label: count / frame_count for label, count in filtered_counts.items()}
 
+    # Store detections in MongoDB (does not affect detection output)
+    for animal, score in video_scores.items():
+        store_detection(animal, "video", score, is_dangerous_animal(animal))
+
     return jsonify({
         "status": "success",
         "detected": list(filtered_counts.keys()),
@@ -280,7 +308,7 @@ def detect_from_video():
 
 @app.route("/audio_detect", methods=["GET"])
 def detect_from_audio():
-    seconds = int(request.args.get("seconds", 8))
+    seconds = int(request.args.get("seconds", 3))
     threshold = float(request.args.get("threshold", 0.08))
     silence_rms = float(request.args.get("silence_rms", 0.03))
     min_top_score = float(request.args.get("min_top_score", 0.15))
@@ -294,8 +322,8 @@ def detect_from_audio():
         os.unlink(wav_path)
         if sample_rate != 32000:
             waveform = librosa.resample(waveform, orig_sr=sample_rate, target_sr=32000)
-        # Pad/crop to 10 seconds for PANNs
-        target_len = 32000 * 10
+        # Pad/crop to requested seconds for faster inference
+        target_len = 32000 * seconds
         if len(waveform) < target_len:
             waveform = np.pad(waveform, (0, target_len - len(waveform)))
         elif len(waveform) > target_len:
@@ -335,6 +363,11 @@ def detect_from_audio():
 
         detected = [k for k, v in scores.items() if v >= threshold]
         detected_sorted = sorted(detected, key=lambda k: scores[k], reverse=True)
+
+        # Store detections in MongoDB (does not affect detection output)
+        for animal in detected_sorted:
+            store_detection(animal, "audio", scores.get(animal, 0.0), is_dangerous_animal(animal))
+
         return jsonify({
             "status": "success",
             "detected": detected_sorted,
@@ -343,10 +376,54 @@ def detect_from_audio():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+@app.route("/predict-audio", methods=["POST"])
+def predict_audio():
+    if "file" not in request.files:
+        return jsonify({"status": "error", "message": "No file provided"}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"status": "error", "message": "No file selected"}), 400
+
+    try:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        tmp.close()
+        file.save(tmp.name)
+        waveform = load_audio_file_to_waveform(tmp.name, target_sr=32000)
+        os.unlink(tmp.name)
+
+        scores = infer_audio(waveform)
+        if not scores:
+            return jsonify({"status": "error", "message": "No scores produced"}), 500
+        # Prefer non-human if available
+        non_human_scores = {k: v for k, v in scores.items() if str(k).lower() != "human"}
+        if non_human_scores:
+            animal = max(non_human_scores, key=non_human_scores.get)
+            confidence = round(non_human_scores[animal] * 100, 2)
+            store_detection(animal, "audio_file", non_human_scores[animal], False)
+        else:
+            animal = max(scores, key=scores.get)
+            confidence = round(scores[animal] * 100, 2)
+            store_detection(animal, "audio_file", scores[animal], False)
+
+        return jsonify({"animal": animal, "confidence": confidence})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 # Route to serve local video file (optional fallback)
 @app.route("/video")
 def serve_video():
     return send_from_directory("static", video_filename)
+
+# Route to get detection history
+@app.route("/history", methods=["GET"])
+def get_history():
+    try:
+        limit = int(request.args.get("limit", 5))
+        history = get_detection_history(limit)
+        return jsonify({"status": "success", "history": history})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
     # Disable reloader to avoid Windows watchdog/socket issues with large ML deps

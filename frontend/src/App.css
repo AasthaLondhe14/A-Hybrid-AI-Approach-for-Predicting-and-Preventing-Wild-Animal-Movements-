@@ -252,6 +252,62 @@ body, html {
   50% { opacity: 0.4; }
   100% { opacity: 1; }
 }
+
+/* Contacts page */
+.page-container {
+  padding: 30px;
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+.page-title {
+  font-size: 28px;
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 20px;
+}
+
+.card-box {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  border-radius: 15px;
+  padding: 25px;
+  margin-bottom: 20px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.1);
+}
+
+.input-field {
+  width: 100%;
+  padding: 10px;
+  margin-top: 8px;
+  margin-bottom: 18px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  font-size: 14px;
+}
+
+.save-btn {
+  background: #4a6cf7;
+  color: white;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: 0.3s;
+}
+
+.save-btn:hover {
+  background: #3248c5;
+}
+
+.info-list {
+  line-height: 1.8;
+  font-size: 15px;
+}
+
+@keyframes fadeIn {
+  from {opacity:0;}
+  to {opacity:1;}
+}
 /* Container to hold live feed and heatmap side-by-side */
 .live-risk-container {
   display: flex;

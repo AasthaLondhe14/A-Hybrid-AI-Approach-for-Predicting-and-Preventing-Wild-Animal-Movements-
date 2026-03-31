@@ -1,6 +1,9 @@
 import React, { useEffect, useState, useRef } from "react";
 import "./App.css";
 import axios from "axios";
+import Contacts from "./Contacts";
+import Help from "./Help";
+import AudioPredict from "./AudioPredict";
 
 function App() {
   const [detected, setDetected] = useState([]);
@@ -9,9 +12,11 @@ function App() {
   const [audioDetected, setAudioDetected] = useState([]);
   const [audioScores, setAudioScores] = useState({});
   const [soundEnabled, setSoundEnabled] = useState(false);
+  const [activeView, setActiveView] = useState("home");
   const audioRef = useRef(null);
   const previousDetectedRef = useRef([]);
-  const ipCameraStreamUrl = "http://192.0.0.4:8080/video";
+  const API_BASE = `${window.location.protocol}//${window.location.hostname}:5000`;
+  const ipCameraStreamUrl = "http://100.106.20.13:8080/video";
   const dangerousAnimals = [
     "tiger",
     "leopard",
@@ -33,7 +38,7 @@ function App() {
   const onlyHumanDetected =
     detected.length > 0 &&
     detected.every((animal) => String(animal).toLowerCase() === "human");
-  const MIN_VIDEO_DISPLAY_SCORE = 0.6;
+  const MIN_VIDEO_DISPLAY_SCORE = 0.75;
   const nonHumanDetected = detected.filter(
     (animal) => String(animal).toLowerCase() !== "human"
   );
@@ -41,22 +46,8 @@ function App() {
     (animal) => (videoScores[animal] ?? 0) >= MIN_VIDEO_DISPLAY_SCORE
   );
   const animalDetected = videoDisplayAnimals.length > 0;
-  const TOP_K = 3;
   const cleanLabel = (label) => String(label).toLowerCase();
   const isHuman = (label) => cleanLabel(label) === "human";
-  const MIN_VIDEO_SCORE = 0.15;
-  const MIN_AUDIO_SCORE = 0.06;
-  const topVideo = Object.entries(videoScores)
-    .filter(([label, score]) => !isHuman(label) && (score ?? 0) >= MIN_VIDEO_SCORE)
-    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
-    .slice(0, TOP_K)
-    .map(([label]) => label);
-  const topAudio = Object.entries(audioScores)
-    .filter(([label, score]) => !isHuman(label) && (score ?? 0) >= MIN_AUDIO_SCORE)
-    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
-    .slice(0, TOP_K)
-    .map(([label]) => label);
-  const finalWinner = null;
   const topAudioLabels = Object.entries(audioScores)
     .filter(([label, score]) => !isHuman(label) && (score ?? 0) > 0)
     .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
@@ -74,7 +65,7 @@ function App() {
   useEffect(() => {
     const fetchDetection = async () => {
       try {
-        const res = await axios.get("http://localhost:5000/detect");
+        const res = await axios.get(`${API_BASE}/detect`);
         const isSuccess = res.data.status === "success";
         const newDetected = isSuccess ? (res.data.detected || []) : [];
         const newCounts = isSuccess ? (res.data.counts || {}) : {};
@@ -102,12 +93,12 @@ function App() {
     const interval = setInterval(fetchDetection, 10000);
 
     return () => clearInterval(interval);
-  }, [soundEnabled]); // re-run when soundEnabled changes
+  }, [soundEnabled, API_BASE]); // re-run when soundEnabled changes
 
   useEffect(() => {
     const fetchAudioDetection = async () => {
       try {
-        const res = await axios.get("http://localhost:5000/audio_detect");
+        const res = await axios.get(`${API_BASE}/audio_detect`);
         const newAudioDetected = res.data.detected || [];
         const newAudioScores = res.data.scores || {};
         setAudioDetected(newAudioDetected);
@@ -121,7 +112,7 @@ function App() {
     const interval = setInterval(fetchAudioDetection, 10000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [API_BASE]);
 
   useEffect(() => {
     if (!soundEnabled || !audioRef.current) return;
@@ -143,6 +134,10 @@ function App() {
     }
   };
 
+  const handleMenuClick = (view) => {
+    setActiveView(view);
+  };
+
   return (
     <div>
       {/* Alert sound (path fixed to public folder) */}
@@ -155,15 +150,22 @@ function App() {
       <div className="app">
         <div className="sidebar glass slide-in-left">
           <ul>
-            <li>User Profile</li>
-            <li>System Status</li>
-            <li>Settings</li>
-            <li>Help</li>
-            <li>Contacts</li>
+            <li onClick={() => handleMenuClick("home")} style={{ cursor: "pointer", fontWeight: activeView === "home" ? "bold" : "normal" }}>Home</li>
+            <li onClick={() => handleMenuClick("prediction")} style={{ cursor: "pointer", fontWeight: activeView === "prediction" ? "bold" : "normal" }}>Prediction Results</li>
+            <li onClick={() => handleMenuClick("help")} style={{ cursor: "pointer", fontWeight: activeView === "help" ? "bold" : "normal" }}>Help</li>
+            <li onClick={() => handleMenuClick("contacts")} style={{ cursor: "pointer", fontWeight: activeView === "contacts" ? "bold" : "normal" }}>Contacts</li>
           </ul>
         </div>
 
         <div className="main glass fade-in">
+          {activeView === "contacts" ? (
+            <Contacts />
+          ) : activeView === "prediction" ? (
+            <AudioPredict />
+          ) : activeView === "help" ? (
+            <Help />
+          ) : (
+            <>
           <div className="section">
             <h3>Live Intrusion Alerts</h3>
 
@@ -322,7 +324,8 @@ function App() {
               </div>
             )}
           </div>
-
+            </>
+          )}
         </div>
       </div>
     </div>
