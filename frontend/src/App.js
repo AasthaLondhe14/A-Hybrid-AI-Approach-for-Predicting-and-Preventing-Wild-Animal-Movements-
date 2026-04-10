@@ -16,7 +16,7 @@ function App() {
   const audioRef = useRef(null);
   const previousDetectedRef = useRef([]);
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:5000`;
-  const ipCameraStreamUrl = "http://100.106.20.13:8080/video";
+  const ipCameraStreamUrl = "http://100.107.105.168:8080/video";
   const dangerousAnimals = [
     "tiger",
     "leopard",
@@ -38,13 +38,10 @@ function App() {
   const onlyHumanDetected =
     detected.length > 0 &&
     detected.every((animal) => String(animal).toLowerCase() === "human");
-  const MIN_VIDEO_DISPLAY_SCORE = 0.75;
   const nonHumanDetected = detected.filter(
     (animal) => String(animal).toLowerCase() !== "human"
   );
-  const videoDisplayAnimals = nonHumanDetected.filter(
-    (animal) => (videoScores[animal] ?? 0) >= MIN_VIDEO_DISPLAY_SCORE
-  );
+  const videoDisplayAnimals = nonHumanDetected;
   const animalDetected = videoDisplayAnimals.length > 0;
   const cleanLabel = (label) => String(label).toLowerCase();
   const isHuman = (label) => cleanLabel(label) === "human";

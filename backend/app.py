@@ -11,22 +11,30 @@ import sounddevice as sd
 import librosa
 import urllib.request
 import json
+import pickle
 import torch
 import torch.nn as nn
+import tensorflow as tf
+import tensorflow_hub as hub
 from flask_cors import CORS
 from database import store_detection, get_detection_history
+from email_service import send_danger_alert_email
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+YAMNET_CACHE_DIR = os.path.join(BACKEND_DIR, "tfhub_cache_yamnet")
+os.makedirs(YAMNET_CACHE_DIR, exist_ok=True)
+os.environ["TFHUB_CACHE_DIR"] = YAMNET_CACHE_DIR
 
 # Load YOLOv8 model
 model = YOLO(os.path.join("yolov8", "bestR.pt"))
 
 # IP camera stream (update if your camera uses a different path)
-ip_camera_url = "http://100.106.20.13:8080/video"
+ip_camera_url = "http://100.107.105.168:8080/video"
 
 # IP camera audio stream (set to your camera's audio/rtsp stream if different)
-ip_camera_audio_url = "http://100.106.20.13:8080/audio.wav"
+ip_camera_audio_url = "http://100.107.105.168:8080/audio.wav"
 
 # PANNs assets
 PANNS_DATA_DIR = os.path.join(os.path.expanduser("~"), "panns_data")
@@ -71,8 +79,11 @@ ensure_panns_assets()
 from panns_inference import AudioTagging, labels as panns_labels
 audio_tagger = AudioTagging(checkpoint_path=PANNS_CHECKPOINT_PATH, device="cpu")
 
-MODEL_PATH = r"E:\\datasets\\audio_datasets\\models\\audio_classifier.pth"
-LABELS_PATH = r"E:\\datasets\\audio_datasets\\models\\labels.json"
+MODEL_PATH = r"E:\\models\\audio_classifier_balanced.pth"
+LABELS_PATH = r"E:\\models\\labels_balanced.json"
+YAMNET_SVM_MODEL_PATH = r"E:\\models\\YAMNet_SVM_optimized_model.pkl"
+YAMNET_SVM_LABEL_ENCODER_PATH = r"E:\\models\\YAMNet_SVM_optimized_label_encoder.pkl"
+YAMNET_SVM_SCALER_PATH = r"E:\\models\\YAMNet_SVM_optimized_scaler.pkl"
 
 class MLP(nn.Module):
     def __init__(self, in_dim, num_classes):
@@ -93,6 +104,18 @@ class MLP(nn.Module):
 USE_FINETUNED_AUDIO = True
 audio_classifier = None
 audio_labels = None
+yamnet_model = None
+yamnet_svm_model = None
+yamnet_label_encoder = None
+yamnet_scaler = None
+DEFAULT_VIDEO_MIN_CONF = 0.80
+DEFAULT_VIDEO_MIN_COUNT = 3
+DEFAULT_VIDEO_MIN_AVG_CONF = 0.85
+DEFAULT_AUDIO_THRESHOLD = 0.45
+DEFAULT_AUDIO_SILENCE_RMS = 0.035
+DEFAULT_AUDIO_MIN_TOP_SCORE = 0.48
+DEFAULT_AUDIO_MIN_MARGIN = 0.05
+HORSE_AUDIO_FORCE_SCORE = 0.60
 
 def load_audio_classifier():
     global audio_classifier, audio_labels
@@ -112,6 +135,26 @@ def load_audio_classifier():
 
 load_audio_classifier()
 
+
+def load_yamnet_classifier():
+    global yamnet_model, yamnet_svm_model, yamnet_label_encoder, yamnet_scaler
+    if not (
+        os.path.exists(YAMNET_SVM_MODEL_PATH)
+        and os.path.exists(YAMNET_SVM_LABEL_ENCODER_PATH)
+        and os.path.exists(YAMNET_SVM_SCALER_PATH)
+    ):
+        return
+    yamnet_model = hub.load("https://tfhub.dev/google/yamnet/1")
+    with open(YAMNET_SVM_MODEL_PATH, "rb") as f:
+        yamnet_svm_model = pickle.load(f)
+    with open(YAMNET_SVM_LABEL_ENCODER_PATH, "rb") as f:
+        yamnet_label_encoder = pickle.load(f)
+    with open(YAMNET_SVM_SCALER_PATH, "rb") as f:
+        yamnet_scaler = pickle.load(f)
+
+
+load_yamnet_classifier()
+
 TARGET_KEYWORDS = {
     "lion": ["roar", "roaring", "growl", "big cat", "animal"],
     "tiger": ["roar", "roaring", "growl", "big cat", "animal"],
@@ -122,6 +165,33 @@ TARGET_KEYWORDS = {
     "cow": ["cattle", "cow", "moo"],
     "deer": ["deer", "animal"],
 }
+
+AUDIO_ALLOWED_ANIMALS = {
+    "lion",
+    "tiger",
+    "cheetah",
+    "cat",
+    "dog",
+    "cow",
+    "deer",
+    "leopard",
+    "bear",
+    "elephant",
+    "horse",
+    "wild boar",
+    "boar",
+    "wolf",
+    "panther",
+    "crocodile",
+    "rhino",
+    "hippo",
+    "snake",
+}
+
+
+def is_allowed_audio_animal(label):
+    normalized = str(label).strip().lower()
+    return normalized not in {"human", "dog"}
 
 def build_target_indices():
     indices = {}
@@ -193,6 +263,24 @@ def load_audio_file_to_waveform(file_path, target_sr=32000):
     return waveform
 
 def infer_audio(waveform):
+    if (
+        yamnet_model is not None
+        and yamnet_svm_model is not None
+        and yamnet_label_encoder is not None
+        and yamnet_scaler is not None
+    ):
+        waveform_16k = librosa.resample(waveform, orig_sr=32000, target_sr=16000).astype(np.float32)
+        scores, embeddings, spectrogram = yamnet_model(waveform_16k)
+        embeddings_np = embeddings.numpy().astype(np.float32)
+        pooled_feature = np.concatenate(
+            [np.mean(embeddings_np, axis=0), np.std(embeddings_np, axis=0)],
+            axis=0,
+        ).reshape(1, -1)
+        scaled_feature = yamnet_scaler.transform(pooled_feature)
+        probs = yamnet_svm_model.predict_proba(scaled_feature)[0]
+        labels = yamnet_label_encoder.inverse_transform(np.arange(len(probs)))
+        return {str(label): float(prob) for label, prob in zip(labels, probs)}
+
     # If fine-tuned classifier is available, use it
     if USE_FINETUNED_AUDIO and audio_classifier is not None and audio_labels is not None:
         if waveform.ndim == 1:
@@ -218,6 +306,74 @@ def infer_audio(waveform):
         else:
             target_scores[target] = 0.0
     return target_scores
+
+
+def build_zero_scores():
+    if audio_labels is not None:
+        return {
+            label: 0.0
+            for label in (audio_labels[str(i)] for i in range(len(audio_labels)))
+            if is_allowed_audio_animal(label)
+        }
+    return {}
+
+
+def filter_audio_scores(raw_scores, threshold, min_top_score, min_margin):
+    scores = {
+        str(label): float(score)
+        for label, score in raw_scores.items()
+        if is_allowed_audio_animal(label)
+    }
+    if not scores:
+        return [], {}
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    top_label, top_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    margin = top_score - second_score
+
+    if str(top_label).strip().lower() == "horse" and top_score >= HORSE_AUDIO_FORCE_SCORE:
+        filtered_scores = {
+            label: (score if label == top_label else 0.0)
+            for label, score in scores.items()
+        }
+        return [top_label], filtered_scores
+
+    if top_score < min_top_score:
+        return [], {label: 0.0 for label in scores}
+
+    if margin < min_margin and top_score < (min_top_score + 0.15):
+        return [], {label: 0.0 for label in scores}
+
+    detected = [top_label] if top_score >= threshold else []
+    filtered_scores = {
+        label: (score if label in detected else 0.0)
+        for label, score in scores.items()
+    }
+    return detected, filtered_scores
+
+
+def log_audio_debug(raw_scores, detected):
+    if not raw_scores:
+        print("[audio] no raw scores produced")
+        return
+    ranked = sorted(
+        (
+            (str(label), float(score))
+            for label, score in raw_scores.items()
+            if is_allowed_audio_animal(label)
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    if not ranked:
+        print("[audio] no allowed audio labels after filtering")
+        return
+    top_preview = ", ".join(f"{label}={score:.3f}" for label, score in ranked[:5])
+    if detected:
+        print(f"[audio] detected={detected} | top_scores: {top_preview}")
+    else:
+        print(f"[audio] no confident detection | top_scores: {top_preview}")
 
 # Local fallback video (kept for testing if IP cam is down)
 video_filename = "LionM.mp4"
@@ -250,8 +406,10 @@ def detect_from_video():
     detected_classes = set()
     class_counts = {}
     class_max_conf = {}
-    min_conf = float(request.args.get("min_conf", 0.85))
-    min_count = int(request.args.get("min_count", 4))
+    class_conf_sums = {}
+    min_conf = float(request.args.get("min_conf", DEFAULT_VIDEO_MIN_CONF))
+    min_count = int(request.args.get("min_count", DEFAULT_VIDEO_MIN_COUNT))
+    min_avg_conf = float(request.args.get("min_avg_conf", DEFAULT_VIDEO_MIN_AVG_CONF))
 
     if not cap.isOpened():
         return jsonify({
@@ -279,6 +437,7 @@ def detect_from_video():
             detected_classes.add(label)
             class_counts[label] = class_counts.get(label, 0) + 1
             class_max_conf[label] = max(class_max_conf.get(label, 0.0), conf)
+            class_conf_sums[label] = class_conf_sums.get(label, 0.0) + conf
 
         frame_count += 1
 
@@ -292,11 +451,18 @@ def detect_from_video():
     # Filter out single-frame flickers/false positives
     filtered_counts = {k: v for k, v in class_counts.items() if v >= min_count}
     filtered_counts = {k: v for k, v in filtered_counts.items() if class_max_conf.get(k, 0.0) >= min_conf}
+    filtered_counts = {
+        k: v for k, v in filtered_counts.items()
+        if (class_conf_sums.get(k, 0.0) / max(1, class_counts.get(k, 1))) >= min_avg_conf
+    }
     video_scores = {label: count / frame_count for label, count in filtered_counts.items()}
 
     # Store detections in MongoDB (does not affect detection output)
     for animal, score in video_scores.items():
-        store_detection(animal, "video", score, is_dangerous_animal(animal))
+        is_dangerous = is_dangerous_animal(animal)
+        store_detection(animal, "video", score, is_dangerous)
+        if is_dangerous:
+            send_danger_alert_email(animal, "video", score)
 
     return jsonify({
         "status": "success",
@@ -308,16 +474,20 @@ def detect_from_video():
 
 @app.route("/audio_detect", methods=["GET"])
 def detect_from_audio():
-    seconds = int(request.args.get("seconds", 3))
-    threshold = float(request.args.get("threshold", 0.08))
-    silence_rms = float(request.args.get("silence_rms", 0.03))
-    min_top_score = float(request.args.get("min_top_score", 0.15))
+    seconds = int(request.args.get("seconds", 4))
+    threshold = float(request.args.get("threshold", DEFAULT_AUDIO_THRESHOLD))
+    silence_rms = float(request.args.get("silence_rms", DEFAULT_AUDIO_SILENCE_RMS))
+    min_top_score = float(request.args.get("min_top_score", DEFAULT_AUDIO_MIN_TOP_SCORE))
+    min_margin = float(request.args.get("min_margin", DEFAULT_AUDIO_MIN_MARGIN))
+    if not ip_camera_audio_url:
+        return jsonify({
+            "status": "success",
+            "detected": [],
+            "scores": build_zero_scores(),
+            "message": "IP camera audio stream is not configured"
+        })
     try:
-        # Use laptop mic if no IP camera audio URL is set
-        if not ip_camera_audio_url:
-            wav_path = capture_audio_mic(seconds=seconds, sample_rate=32000)
-        else:
-            wav_path = capture_audio_wav(ip_camera_audio_url, seconds=seconds, sample_rate=32000)
+        wav_path = capture_audio_wav(ip_camera_audio_url, seconds=seconds, sample_rate=32000)
         sample_rate, waveform = load_waveform(wav_path)
         os.unlink(wav_path)
         if sample_rate != 32000:
@@ -332,41 +502,34 @@ def detect_from_audio():
         # Silence gate: when near-silent, return zero scores
         rms = float(np.sqrt(np.mean(np.square(waveform))))
         if rms < silence_rms:
-            # Return explicit zeros for all labels when silent
-            if audio_labels is not None:
-                zero_scores = {audio_labels[str(i)]: 0.0 for i in range(len(audio_labels))}
-            else:
-                zero_scores = {}
             return jsonify({
                 "status": "success",
                 "detected": [],
-                "scores": zero_scores
+                "scores": build_zero_scores()
             })
 
-        scores = infer_audio(waveform)
-        # Disable human completely from audio results
-        if "human" in scores:
-            scores.pop("human", None)
-
-        # If nothing is confidently animal-like, zero everything
-        max_score = max(scores.values(), default=0.0)
-        if max_score < min_top_score:
-            if audio_labels is not None:
-                zero_scores = {audio_labels[str(i)]: 0.0 for i in range(len(audio_labels))}
-            else:
-                zero_scores = {k: 0.0 for k in scores.keys()}
+        raw_scores = infer_audio(waveform)
+        detected_sorted, scores = filter_audio_scores(
+            raw_scores,
+            threshold=threshold,
+            min_top_score=min_top_score,
+            min_margin=min_margin,
+        )
+        log_audio_debug(raw_scores, detected_sorted)
+        if not detected_sorted:
             return jsonify({
                 "status": "success",
                 "detected": [],
-                "scores": zero_scores
+                "scores": scores if scores else build_zero_scores()
             })
-
-        detected = [k for k, v in scores.items() if v >= threshold]
-        detected_sorted = sorted(detected, key=lambda k: scores[k], reverse=True)
 
         # Store detections in MongoDB (does not affect detection output)
         for animal in detected_sorted:
-            store_detection(animal, "audio", scores.get(animal, 0.0), is_dangerous_animal(animal))
+            is_dangerous = is_dangerous_animal(animal)
+            score = scores.get(animal, 0.0)
+            store_detection(animal, "audio", score, is_dangerous)
+            if is_dangerous:
+                send_danger_alert_email(animal, "audio", score)
 
         return jsonify({
             "status": "success",
@@ -374,7 +537,13 @@ def detect_from_audio():
             "scores": scores
         })
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        print(f"[audio] ip camera audio unavailable: {e}")
+        return jsonify({
+            "status": "success",
+            "detected": [],
+            "scores": build_zero_scores(),
+            "message": "IP camera audio unavailable"
+        })
 
 
 @app.route("/predict-audio", methods=["POST"])
@@ -392,19 +561,22 @@ def predict_audio():
         waveform = load_audio_file_to_waveform(tmp.name, target_sr=32000)
         os.unlink(tmp.name)
 
-        scores = infer_audio(waveform)
+        raw_scores = infer_audio(waveform)
+        detected, scores = filter_audio_scores(
+            raw_scores,
+            threshold=DEFAULT_AUDIO_THRESHOLD,
+            min_top_score=DEFAULT_AUDIO_MIN_TOP_SCORE,
+            min_margin=DEFAULT_AUDIO_MIN_MARGIN,
+        )
+        log_audio_debug(raw_scores, detected)
         if not scores:
             return jsonify({"status": "error", "message": "No scores produced"}), 500
-        # Prefer non-human if available
-        non_human_scores = {k: v for k, v in scores.items() if str(k).lower() != "human"}
-        if non_human_scores:
-            animal = max(non_human_scores, key=non_human_scores.get)
-            confidence = round(non_human_scores[animal] * 100, 2)
-            store_detection(animal, "audio_file", non_human_scores[animal], False)
-        else:
-            animal = max(scores, key=scores.get)
-            confidence = round(scores[animal] * 100, 2)
-            store_detection(animal, "audio_file", scores[animal], False)
+        if not detected:
+            return jsonify({"animal": "No confident animal detected", "confidence": 0.0})
+
+        animal = detected[0]
+        confidence = round(scores[animal] * 100, 2)
+        store_detection(animal, "audio_file", scores[animal], False)
 
         return jsonify({"animal": animal, "confidence": confidence})
     except Exception as e:
