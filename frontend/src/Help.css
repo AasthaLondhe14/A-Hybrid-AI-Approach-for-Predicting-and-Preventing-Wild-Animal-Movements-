@@ -1,0 +1,145 @@
+.help-guide.page-container {
+  padding: 30px;
+  animation: helpFadeIn 0.5s ease-in-out;
+  background: linear-gradient(135deg, rgba(12, 16, 28, 0.85), rgba(20, 26, 42, 0.6));
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.help-guide .guide-hero {
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: linear-gradient(120deg, rgba(33, 78, 255, 0.18), rgba(12, 16, 28, 0.4));
+  border: 1px solid rgba(125, 162, 255, 0.2);
+  margin-bottom: 22px;
+}
+
+.help-guide .page-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #e9efff;
+  margin: 0 0 8px;
+}
+
+.help-guide .guide-subtitle {
+  margin: 0;
+  color: #c2cfe9;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.help-guide .guide-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.help-guide .guide-card {
+  background: rgba(13, 18, 32, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 24px rgba(5, 8, 18, 0.45);
+}
+
+.help-guide .guide-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e9efff;
+  margin: 0 0 10px;
+}
+
+.help-guide .guide-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+  counter-reset: step;
+}
+
+.help-guide .guide-steps li {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 10px;
+  align-items: start;
+  color: #e6ecff;
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.help-guide .guide-steps li::before {
+  counter-increment: step;
+  content: counter(step);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #210eed;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.help-guide .status-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  margin-bottom: 10px;
+}
+
+.help-guide .status-row p {
+  margin: 0;
+  color: #e6ecff;
+  font-size: 14px;
+}
+
+.help-guide .status-chip {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.help-guide .status-chip.danger {
+  color: #b71c1c;
+  background: rgba(229, 57, 53, 0.12);
+  border-color: rgba(229, 57, 53, 0.3);
+}
+
+.help-guide .status-chip.safe {
+  color: #1b5e20;
+  background: rgba(46, 125, 50, 0.12);
+  border-color: rgba(46, 125, 50, 0.3);
+}
+
+.help-guide .guide-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.help-guide .guide-list li {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e6ecff;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+@keyframes helpFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}

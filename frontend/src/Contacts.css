@@ -1,0 +1,100 @@
+.contacts-page.page-container {
+  padding: 30px;
+  animation: contactsFadeIn 0.5s ease-in-out;
+  background: linear-gradient(135deg, rgba(12, 16, 28, 0.85), rgba(20, 26, 42, 0.6));
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.contacts-page .contacts-hero {
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: linear-gradient(120deg, rgba(33, 78, 255, 0.18), rgba(12, 16, 28, 0.4));
+  border: 1px solid rgba(125, 162, 255, 0.2);
+  margin-bottom: 22px;
+}
+
+.contacts-page .page-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #e9efff;
+  margin: 0 0 8px;
+}
+
+.contacts-page .contacts-subtitle {
+  margin: 0;
+  color: #c2cfe9;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.contacts-page .contacts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.contacts-page .contact-card {
+  background: rgba(13, 18, 32, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 24px rgba(5, 8, 18, 0.45);
+}
+
+.contacts-page .contact-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e9efff;
+  margin: 0 0 10px;
+}
+
+.contacts-page .contact-label {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #a9b8d6;
+}
+
+.contacts-page .contact-value {
+  margin: 6px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #a9c2ff;
+}
+
+.contacts-page .developers-card {
+  grid-column: 1 / -1;
+}
+
+.contacts-page .developer-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.contacts-page .developer-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.contacts-page .developer-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e9efff;
+}
+
+.contacts-page .developer-email {
+  font-size: 13px;
+  color: #c2cfe9;
+}
+
+@keyframes contactsFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}

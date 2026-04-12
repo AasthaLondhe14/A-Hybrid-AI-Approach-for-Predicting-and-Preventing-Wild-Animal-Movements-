@@ -168,7 +168,11 @@ function App() {
 
             {/* Enable sound button */}
             {!soundEnabled && (
-              <button onClick={handleEnableSound} style={{ marginBottom: "10px", padding: "6px 12px" }}>
+              <button
+                onClick={handleEnableSound}
+                className="enable-sound-btn"
+                style={{ marginBottom: "10px", padding: "6px 12px" }}
+              >
                 🔊 Enable Alert Sound
               </button>
             )}

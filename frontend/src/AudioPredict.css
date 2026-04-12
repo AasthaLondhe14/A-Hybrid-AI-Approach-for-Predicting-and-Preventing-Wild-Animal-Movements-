@@ -1,0 +1,168 @@
+.audio-predict.page-container {
+  padding: 30px;
+  animation: audioPredictFadeIn 0.5s ease-in-out;
+  background: linear-gradient(135deg, rgba(12, 16, 28, 0.85), rgba(20, 26, 42, 0.6));
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.audio-predict .page-title {
+  font-size: 28px;
+  font-weight: 600;
+  color: #e9efff;
+  margin-bottom: 20px;
+  text-shadow: 0 8px 20px rgba(5, 8, 18, 0.6);
+}
+
+.audio-predict .card-box {
+  background: rgba(15, 20, 36, 0.9);
+  backdrop-filter: blur(10px);
+  border-radius: 15px;
+  padding: 25px;
+  margin-bottom: 20px;
+  box-shadow: 0 10px 24px rgba(5, 8, 18, 0.45);
+  border: 1px solid rgba(125, 162, 255, 0.18);
+}
+
+.audio-predict .prediction-card {
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 18px;
+}
+
+.audio-predict .prediction-card p {
+  margin: 0;
+  color: #e6ecff;
+  font-size: 15px;
+}
+
+.audio-predict .prediction-card::-webkit-scrollbar {
+  width: 6px;
+}
+
+.audio-predict .prediction-card::-webkit-scrollbar-thumb {
+  background: rgba(31, 42, 61, 0.2);
+  border-radius: 6px;
+}
+
+.audio-predict .input-field {
+  width: 100%;
+  padding: 10px;
+  margin-top: 8px;
+  margin-bottom: 18px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  font-size: 14px;
+}
+
+.audio-predict .save-btn {
+  background: #4a6cf7;
+  color: white;
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: 0.3s;
+}
+
+.audio-predict .save-btn:hover {
+  background: #3248c5;
+}
+
+.audio-predict .info-list {
+  line-height: 1.8;
+  font-size: 15px;
+}
+
+.audio-predict .prediction-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.audio-predict .prediction-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(23, 30, 48, 0.85);
+  box-shadow: 0 8px 20px rgba(5, 8, 18, 0.45);
+  border: 1px solid rgba(125, 162, 255, 0.12);
+  border-left: 6px solid transparent;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.audio-predict .prediction-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.12);
+}
+
+.audio-predict .prediction-item.is-danger {
+  border-left-color: #e53935;
+  background: linear-gradient(90deg, rgba(229, 57, 53, 0.2), rgba(12, 16, 28, 0.7) 60%);
+}
+
+.audio-predict .prediction-item.is-safe {
+  border-left-color: #2e7d32;
+  background: linear-gradient(90deg, rgba(46, 125, 50, 0.2), rgba(12, 16, 28, 0.7) 60%);
+}
+
+.audio-predict .prediction-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #e9efff;
+}
+
+.audio-predict .prediction-type {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #c9d7f5;
+}
+
+.audio-predict .prediction-item.is-danger .prediction-type {
+  background: rgba(229, 57, 53, 0.12);
+  color: #b71c1c;
+}
+
+.audio-predict .prediction-item.is-safe .prediction-type {
+  background: rgba(46, 125, 50, 0.12);
+  color: #1b5e20;
+}
+
+.audio-predict .prediction-confidence {
+  font-size: 14px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 10px;
+  color: #e9efff;
+  background: rgba(33, 78, 255, 0.2);
+  border: 1px solid rgba(125, 162, 255, 0.35);
+  min-width: 64px;
+  text-align: center;
+}
+
+.audio-predict .prediction-item.is-danger .prediction-confidence {
+  background: rgba(229, 57, 53, 0.12);
+  color: #b71c1c;
+  border-color: rgba(229, 57, 53, 0.3);
+}
+
+.audio-predict .prediction-item.is-safe .prediction-confidence {
+  background: rgba(46, 125, 50, 0.2);
+  color: #dff6e3;
+  border-color: rgba(46, 125, 50, 0.45);
+}
+
+@keyframes audioPredictFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
