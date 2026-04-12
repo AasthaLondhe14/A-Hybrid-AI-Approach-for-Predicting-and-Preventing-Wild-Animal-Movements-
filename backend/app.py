@@ -127,6 +127,9 @@ VIDEO_BLANK_STD = 5.0
 VIDEO_BLANK_LAPLACIAN_VAR = 12.0
 DEFAULT_AUDIO_THRESHOLD = 0.45
 DEFAULT_AUDIO_SILENCE_RMS = 0.035
+DEFAULT_AUDIO_ENABLE_RMS = 0.06
+DEFAULT_AUDIO_ACTIVE_AMPLITUDE = 0.02
+DEFAULT_AUDIO_MIN_ACTIVE_RATIO = 0.01
 DEFAULT_AUDIO_MIN_TOP_SCORE = 0.48
 DEFAULT_AUDIO_MIN_MARGIN = 0.05
 HORSE_AUDIO_FORCE_SCORE = 0.60
@@ -574,6 +577,9 @@ def detect_from_audio():
     seconds = int(request.args.get("seconds", 4))
     threshold = float(request.args.get("threshold", DEFAULT_AUDIO_THRESHOLD))
     silence_rms = float(request.args.get("silence_rms", DEFAULT_AUDIO_SILENCE_RMS))
+    enable_rms = float(request.args.get("enable_rms", DEFAULT_AUDIO_ENABLE_RMS))
+    active_amp = float(request.args.get("active_amp", DEFAULT_AUDIO_ACTIVE_AMPLITUDE))
+    min_active_ratio = float(request.args.get("min_active_ratio", DEFAULT_AUDIO_MIN_ACTIVE_RATIO))
     min_top_score = float(request.args.get("min_top_score", DEFAULT_AUDIO_MIN_TOP_SCORE))
     min_margin = float(request.args.get("min_margin", DEFAULT_AUDIO_MIN_MARGIN))
     if not ip_camera_audio_url:
@@ -605,11 +611,13 @@ def detect_from_audio():
 
         # Silence gate: when near-silent, return zero scores
         rms = float(np.sqrt(np.mean(np.square(waveform))))
-        if rms < silence_rms:
+        active_ratio = float(np.mean(np.abs(waveform) > active_amp))
+        if rms < silence_rms or rms < enable_rms or active_ratio < min_active_ratio:
             return jsonify({
                 "status": "success",
                 "detected": [],
-                "scores": build_zero_scores()
+                "scores": build_zero_scores(),
+                "message": "IP camera audio muted or disabled"
             })
 
         raw_scores = infer_audio(waveform)
