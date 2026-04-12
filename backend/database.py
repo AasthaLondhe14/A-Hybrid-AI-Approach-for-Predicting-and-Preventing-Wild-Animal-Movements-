@@ -39,10 +39,20 @@ def store_detection(animal_name, detection_type, confidence, is_dangerous):
         return None
 
     try:
+        try:
+            normalized_confidence = float(confidence)
+        except (TypeError, ValueError):
+            normalized_confidence = 0.0
+
+        if normalized_confidence < 0.0:
+            normalized_confidence = 0.0
+        if normalized_confidence > 1.0:
+            normalized_confidence = 1.0
+
         detection_record = {
             "animal_name": animal_name,
             "detection_type": detection_type,
-            "confidence": float(confidence),
+            "confidence": normalized_confidence,
             "is_dangerous": bool(is_dangerous),
             "timestamp": datetime.now(),
         }
@@ -76,12 +86,22 @@ def get_detection_history(limit=5):
         history = []
 
         for doc in cursor:
+            raw_confidence = doc.get("confidence", 0.0)
+            try:
+                safe_confidence = float(raw_confidence)
+            except (TypeError, ValueError):
+                safe_confidence = 0.0
+            if safe_confidence < 0.0:
+                safe_confidence = 0.0
+            if safe_confidence > 1.0:
+                safe_confidence = 1.0
+
             history.append(
                 {
                     "_id": str(doc["_id"]),
                     "animal_name": doc["animal_name"],
                     "detection_type": doc["detection_type"],
-                    "confidence": doc["confidence"],
+                    "confidence": safe_confidence,
                     "is_dangerous": doc["is_dangerous"],
                     "timestamp": doc["timestamp"].isoformat() if doc.get("timestamp") else None,
                 }

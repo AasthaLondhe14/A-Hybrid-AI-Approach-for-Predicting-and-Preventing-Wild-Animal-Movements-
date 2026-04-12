@@ -16,7 +16,7 @@ function App() {
   const audioRef = useRef(null);
   const previousDetectedRef = useRef([]);
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:5000`;
-  const ipCameraStreamUrl = "http://100.107.105.168:8080/video";
+  const ipCameraStreamUrl = "http://192.0.0.4:8080/video";
   const dangerousAnimals = [
     "tiger",
     "leopard",

@@ -7,7 +7,6 @@ import subprocess
 import time
 import wave
 import numpy as np
-import sounddevice as sd
 import librosa
 import urllib.request
 import json
@@ -27,14 +26,23 @@ YAMNET_CACHE_DIR = os.path.join(BACKEND_DIR, "tfhub_cache_yamnet")
 os.makedirs(YAMNET_CACHE_DIR, exist_ok=True)
 os.environ["TFHUB_CACHE_DIR"] = YAMNET_CACHE_DIR
 
-# Load YOLOv8 model
-model = YOLO(os.path.join("yolov8", "bestR.pt"))
+# Load YOLOv8 model (video detection only)
+VIDEO_MODEL_PATH = r"E:\\Large Animal Dataset\\best13_gpu_50epochs.pt"
+VIDEO_LABELS_PATH = r"E:\\Large Animal Dataset\\labels13.json"
+model = YOLO(VIDEO_MODEL_PATH)
+try:
+    with open(VIDEO_LABELS_PATH, "r", encoding="utf-8") as f:
+        video_labels = json.load(f)
+    if isinstance(video_labels, list) and video_labels:
+        model.names = {i: str(name) for i, name in enumerate(video_labels)}
+except Exception:
+    pass
 
 # IP camera stream (update if your camera uses a different path)
-ip_camera_url = "http://100.107.105.168:8080/video"
+ip_camera_url = "http://192.0.0.4:8080/video"
 
-# IP camera audio stream (set to your camera's audio/rtsp stream if different)
-ip_camera_audio_url = "http://100.107.105.168:8080/audio.wav"
+# IP camera audio stream (IP-only; no microphone fallback)
+ip_camera_audio_url = "http://192.0.0.4:8080/audio.wav"
 
 # PANNs assets
 PANNS_DATA_DIR = os.path.join(os.path.expanduser("~"), "panns_data")
@@ -108,14 +116,24 @@ yamnet_model = None
 yamnet_svm_model = None
 yamnet_label_encoder = None
 yamnet_scaler = None
-DEFAULT_VIDEO_MIN_CONF = 0.80
+DEFAULT_VIDEO_MIN_CONF = 0.70
 DEFAULT_VIDEO_MIN_COUNT = 3
 DEFAULT_VIDEO_MIN_AVG_CONF = 0.85
+DEFAULT_VIDEO_MIN_MARGIN = 0.05
+DEFAULT_VIDEO_MIN_TOP_CONF = 0.85
+DEFAULT_VIDEO_MIN_MOTION = 1.5
+VIDEO_BLANK_MEAN = 5.0
+VIDEO_BLANK_STD = 5.0
+VIDEO_BLANK_LAPLACIAN_VAR = 12.0
 DEFAULT_AUDIO_THRESHOLD = 0.45
 DEFAULT_AUDIO_SILENCE_RMS = 0.035
 DEFAULT_AUDIO_MIN_TOP_SCORE = 0.48
 DEFAULT_AUDIO_MIN_MARGIN = 0.05
 HORSE_AUDIO_FORCE_SCORE = 0.60
+ENABLE_AUDIO_DETECTION = True
+AUDIO_STREAM_CHECK_TTL = 5
+_last_audio_check_time = 0.0
+_last_audio_check_ok = False
 
 def load_audio_classifier():
     global audio_classifier, audio_labels
@@ -193,6 +211,34 @@ def is_allowed_audio_animal(label):
     normalized = str(label).strip().lower()
     return normalized not in {"human", "dog"}
 
+def is_blank_frame(frame):
+    try:
+        if frame is None or frame.size == 0:
+            return True
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        mean, std = cv2.meanStdDev(gray)
+        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        return (
+            float(mean[0][0]) < VIDEO_BLANK_MEAN
+            and float(std[0][0]) < VIDEO_BLANK_STD
+            and lap_var < VIDEO_BLANK_LAPLACIAN_VAR
+        )
+    except Exception:
+        return True
+
+def is_audio_stream_available(url):
+    global _last_audio_check_time, _last_audio_check_ok
+    now = time.time()
+    if now - _last_audio_check_time < AUDIO_STREAM_CHECK_TTL:
+        return _last_audio_check_ok
+    _last_audio_check_time = now
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            chunk = response.read(64)
+            _last_audio_check_ok = len(chunk) > 0
+    except Exception:
+        _last_audio_check_ok = False
+    return _last_audio_check_ok
 def build_target_indices():
     indices = {}
     for target, keywords in TARGET_KEYWORDS.items():
@@ -229,17 +275,6 @@ def capture_audio_wav(url, seconds=6, sample_rate=32000):
         raise RuntimeError(result.stderr.decode("utf-8", errors="ignore")[-400:])
     return tmp.name
 
-def capture_audio_mic(seconds=6, sample_rate=32000):
-    audio = sd.rec(int(seconds * sample_rate), samplerate=sample_rate, channels=1, dtype="int16")
-    sd.wait()
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-    tmp.close()
-    with wave.open(tmp.name, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(audio.tobytes())
-    return tmp.name
 
 def load_waveform(wav_path):
     with wave.open(wav_path, "rb") as wf:
@@ -410,6 +445,9 @@ def detect_from_video():
     min_conf = float(request.args.get("min_conf", DEFAULT_VIDEO_MIN_CONF))
     min_count = int(request.args.get("min_count", DEFAULT_VIDEO_MIN_COUNT))
     min_avg_conf = float(request.args.get("min_avg_conf", DEFAULT_VIDEO_MIN_AVG_CONF))
+    min_margin = float(request.args.get("min_margin", DEFAULT_VIDEO_MIN_MARGIN))
+    min_top_conf = float(request.args.get("min_top_conf", DEFAULT_VIDEO_MIN_TOP_CONF))
+    min_motion = float(request.args.get("min_motion", DEFAULT_VIDEO_MIN_MOTION))
 
     if not cap.isOpened():
         return jsonify({
@@ -418,6 +456,8 @@ def detect_from_video():
         }), 500
 
     frame_count = 0
+    motion_scores = []
+    prev_gray = None
     max_wait_seconds = 6
     start_time = time.time()
     while frame_count < 5:  # Process only 5 frames for speed
@@ -427,7 +467,48 @@ def detect_from_video():
         if not ret:
             break
 
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if prev_gray is not None:
+            diff = cv2.absdiff(gray, prev_gray)
+            motion_scores.append(float(np.mean(diff)))
+        prev_gray = gray
+        if is_blank_frame(frame):
+            frame_count += 1
+            continue
         results = model(frame)[0]
+        if results is None:
+            frame_count += 1
+            continue
+        if results.boxes is None:
+            probs = getattr(results, "probs", None)
+            if probs is None:
+                frame_count += 1
+                continue
+            try:
+                top_idx = int(probs.top1)
+                top_conf = float(probs.top1conf)
+                top5conf = getattr(probs, "top5conf", None)
+                margin = None
+                if top5conf is not None and len(top5conf) > 1:
+                    margin = float(top5conf[0]) - float(top5conf[1])
+            except Exception:
+                frame_count += 1
+                continue
+            if (
+                top_conf >= min_conf
+                and top_conf >= min_top_conf
+                and (margin is None or margin >= min_margin)
+            ):
+                if isinstance(model.names, dict):
+                    label = model.names.get(top_idx, str(top_idx))
+                else:
+                    label = model.names[top_idx] if len(model.names) > top_idx else str(top_idx)
+                detected_classes.add(label)
+                class_counts[label] = class_counts.get(label, 0) + 1
+                class_max_conf[label] = max(class_max_conf.get(label, 0.0), top_conf)
+                class_conf_sums[label] = class_conf_sums.get(label, 0.0) + top_conf
+            frame_count += 1
+            continue
         for box in results.boxes:
             conf = float(box.conf[0]) if hasattr(box, "conf") else 1.0
             if conf < min_conf:
@@ -447,6 +528,15 @@ def detect_from_video():
             "status": "error",
             "message": "No frames received from IP camera stream: " + ip_camera_url
         }), 500
+
+    if motion_scores and (sum(motion_scores) / len(motion_scores)) < min_motion:
+        return jsonify({
+            "status": "success",
+            "detected": [],
+            "counts": {},
+            "scores": {},
+            "frames": frame_count
+        })
 
     # Filter out single-frame flickers/false positives
     filtered_counts = {k: v for k, v in class_counts.items() if v >= min_count}
@@ -474,6 +564,13 @@ def detect_from_video():
 
 @app.route("/audio_detect", methods=["GET"])
 def detect_from_audio():
+    if not ENABLE_AUDIO_DETECTION:
+        return jsonify({
+            "status": "success",
+            "detected": [],
+            "scores": build_zero_scores(),
+            "message": "Audio detection is disabled"
+        })
     seconds = int(request.args.get("seconds", 4))
     threshold = float(request.args.get("threshold", DEFAULT_AUDIO_THRESHOLD))
     silence_rms = float(request.args.get("silence_rms", DEFAULT_AUDIO_SILENCE_RMS))
@@ -485,6 +582,13 @@ def detect_from_audio():
             "detected": [],
             "scores": build_zero_scores(),
             "message": "IP camera audio stream is not configured"
+        })
+    if not is_audio_stream_available(ip_camera_audio_url):
+        return jsonify({
+            "status": "success",
+            "detected": [],
+            "scores": build_zero_scores(),
+            "message": "IP camera audio stream unavailable"
         })
     try:
         wav_path = capture_audio_wav(ip_camera_audio_url, seconds=seconds, sample_rate=32000)
