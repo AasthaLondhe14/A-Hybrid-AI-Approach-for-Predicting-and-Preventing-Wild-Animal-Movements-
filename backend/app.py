@@ -24,8 +24,8 @@ os.makedirs(YAMNET_CACHE_DIR, exist_ok=True)
 os.environ["TFHUB_CACHE_DIR"] = YAMNET_CACHE_DIR
 
 # Load YOLOv8 model (video detection only)
-VIDEO_MODEL_PATH = r"E:\\Large Animal Dataset\\best13_gpu_50epochs.pt"
-VIDEO_LABELS_PATH = r"E:\\Large Animal Dataset\\labels13.json"
+VIDEO_MODEL_PATH = r"E:\\Large Animal Dataset\\best_Un.pt"
+VIDEO_LABELS_PATH = r"E:\\Large Animal Dataset\\labels_un.json"
 model = YOLO(VIDEO_MODEL_PATH)
 try:
     with open(VIDEO_LABELS_PATH, "r", encoding="utf-8") as f:
@@ -36,10 +36,10 @@ except Exception:
     pass
 
 # IP camera stream (update if your camera uses a different path)
-ip_camera_url = "http://100.71.216.92:8080/video"
+ip_camera_url = "http://100.84.198.0:8080/video"
 
 # IP camera audio stream (IP-only; no microphone fallback)
-ip_camera_audio_url = "http://100.71.216.92:8080/audio.wav"
+ip_camera_audio_url = "http://100.84.198.0:8080/audio.wav"
 
 YAMNET_SVM_MODEL_PATH = r"E:\\models\\YAMNet_SVM_optimized_model.pkl"
 YAMNET_SVM_LABEL_ENCODER_PATH = r"E:\\models\\YAMNet_SVM_optimized_label_encoder.pkl"
