@@ -11,9 +11,6 @@ import librosa
 import urllib.request
 import json
 import pickle
-import torch
-import torch.nn as nn
-import tensorflow as tf
 import tensorflow_hub as hub
 from flask_cors import CORS
 from database import store_detection, get_detection_history
@@ -39,79 +36,14 @@ except Exception:
     pass
 
 # IP camera stream (update if your camera uses a different path)
-ip_camera_url = "http://192.0.0.4:8080/video"
+ip_camera_url = "http://100.71.216.92:8080/video"
 
 # IP camera audio stream (IP-only; no microphone fallback)
-ip_camera_audio_url = "http://192.0.0.4:8080/audio.wav"
+ip_camera_audio_url = "http://100.71.216.92:8080/audio.wav"
 
-# PANNs assets
-PANNS_DATA_DIR = os.path.join(os.path.expanduser("~"), "panns_data")
-PANNS_LABELS_PATH = os.path.join(PANNS_DATA_DIR, "class_labels_indices.csv")
-# Use a separate filename to avoid conflicts with partially locked downloads
-PANNS_CHECKPOINT_PATH = os.path.join(PANNS_DATA_DIR, "Cnn14_mAP=0.431.pth.bin")
-PANNS_LABELS_URL = "https://raw.githubusercontent.com/qiuqiangkong/audioset_tagging_cnn/master/metadata/class_labels_indices.csv"
-PANNS_CHECKPOINT_URL = "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1"
-PANNS_MIN_BYTES = 300_000_000  # Cnn14 checkpoint is large; re-download if smaller than 300MB
-
-def download_file(url, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    urllib.request.urlretrieve(url, path)
-
-def get_remote_size(url):
-    try:
-        with urllib.request.urlopen(url) as response:
-            length = response.headers.get("Content-Length")
-            return int(length) if length else None
-    except Exception:
-        return None
-
-def ensure_panns_assets():
-    os.makedirs(PANNS_DATA_DIR, exist_ok=True)
-    if not os.path.exists(PANNS_LABELS_PATH):
-        download_file(PANNS_LABELS_URL, PANNS_LABELS_PATH)
-    expected_size = get_remote_size(PANNS_CHECKPOINT_URL)
-    if os.path.exists(PANNS_CHECKPOINT_PATH):
-        local_size = os.path.getsize(PANNS_CHECKPOINT_PATH)
-        min_size = expected_size if expected_size else PANNS_MIN_BYTES
-        if local_size < min_size:
-            try:
-                os.remove(PANNS_CHECKPOINT_PATH)
-            except OSError:
-                pass
-    if not os.path.exists(PANNS_CHECKPOINT_PATH):
-        download_file(PANNS_CHECKPOINT_URL, PANNS_CHECKPOINT_PATH)
-
-ensure_panns_assets()
-
-# Load PANNs audio tagging model (AudioSet pretrained)
-from panns_inference import AudioTagging, labels as panns_labels
-audio_tagger = AudioTagging(checkpoint_path=PANNS_CHECKPOINT_PATH, device="cpu")
-
-MODEL_PATH = r"E:\\models\\audio_classifier_balanced.pth"
-LABELS_PATH = r"E:\\models\\labels_balanced.json"
 YAMNET_SVM_MODEL_PATH = r"E:\\models\\YAMNet_SVM_optimized_model.pkl"
 YAMNET_SVM_LABEL_ENCODER_PATH = r"E:\\models\\YAMNet_SVM_optimized_label_encoder.pkl"
 YAMNET_SVM_SCALER_PATH = r"E:\\models\\YAMNet_SVM_optimized_scaler.pkl"
-
-class MLP(nn.Module):
-    def __init__(self, in_dim, num_classes):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, 512),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, num_classes),
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-USE_FINETUNED_AUDIO = True
-audio_classifier = None
-audio_labels = None
 yamnet_model = None
 yamnet_svm_model = None
 yamnet_label_encoder = None
@@ -138,25 +70,6 @@ AUDIO_STREAM_CHECK_TTL = 5
 _last_audio_check_time = 0.0
 _last_audio_check_ok = False
 
-def load_audio_classifier():
-    global audio_classifier, audio_labels
-    if not (os.path.exists(MODEL_PATH) and os.path.exists(LABELS_PATH)):
-        return
-    with open(LABELS_PATH, "r", encoding="utf-8") as f:
-        audio_labels = json.load(f)
-    # Infer embedding size from a dummy 10s input
-    dummy = np.zeros((1, 32000 * 10), dtype=np.float32)
-    _, embedding = audio_tagger.inference(dummy)
-    emb = embedding[0]
-    if emb.ndim > 1:
-        emb = emb.mean(axis=0)
-    audio_classifier = MLP(emb.shape[0], len(audio_labels))
-    audio_classifier.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-    audio_classifier.eval()
-
-load_audio_classifier()
-
-
 def load_yamnet_classifier():
     global yamnet_model, yamnet_svm_model, yamnet_label_encoder, yamnet_scaler
     if not (
@@ -175,40 +88,6 @@ def load_yamnet_classifier():
 
 
 load_yamnet_classifier()
-
-TARGET_KEYWORDS = {
-    "lion": ["roar", "roaring", "growl", "big cat", "animal"],
-    "tiger": ["roar", "roaring", "growl", "big cat", "animal"],
-    "cheetah": ["cat", "growl", "animal"],
-    "cat": ["cat", "meow", "purr"],
-    "dog": ["dog", "bark", "growl"],
-    "human": ["speech", "human", "scream", "shout"],
-    "cow": ["cattle", "cow", "moo"],
-    "deer": ["deer", "animal"],
-}
-
-AUDIO_ALLOWED_ANIMALS = {
-    "lion",
-    "tiger",
-    "cheetah",
-    "cat",
-    "dog",
-    "cow",
-    "deer",
-    "leopard",
-    "bear",
-    "elephant",
-    "horse",
-    "wild boar",
-    "boar",
-    "wolf",
-    "panther",
-    "crocodile",
-    "rhino",
-    "hippo",
-    "snake",
-}
-
 
 def is_allowed_audio_animal(label):
     normalized = str(label).strip().lower()
@@ -242,19 +121,6 @@ def is_audio_stream_available(url):
     except Exception:
         _last_audio_check_ok = False
     return _last_audio_check_ok
-def build_target_indices():
-    indices = {}
-    for target, keywords in TARGET_KEYWORDS.items():
-        idxs = []
-        for i, name in enumerate(panns_labels):
-            lname = name.lower()
-            if any(k in lname for k in keywords):
-                idxs.append(i)
-        indices[target] = idxs
-    return indices
-
-target_indices = build_target_indices()
-
 def capture_audio_wav(url, seconds=6, sample_rate=32000):
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     tmp.close()
@@ -319,41 +185,17 @@ def infer_audio(waveform):
         labels = yamnet_label_encoder.inverse_transform(np.arange(len(probs)))
         return {str(label): float(prob) for label, prob in zip(labels, probs)}
 
-    # If fine-tuned classifier is available, use it
-    if USE_FINETUNED_AUDIO and audio_classifier is not None and audio_labels is not None:
-        if waveform.ndim == 1:
-            waveform = waveform[None, :]
-        _, embedding = audio_tagger.inference(waveform)
-        emb = embedding[0]
-        if emb.ndim > 1:
-            emb = emb.mean(axis=0)
-        with torch.no_grad():
-            logits = audio_classifier(torch.from_numpy(emb).unsqueeze(0))
-            probs = torch.softmax(logits, dim=1).squeeze(0).numpy()
-        return {audio_labels[str(i)]: float(probs[i]) for i in range(len(probs))}
-
-    # Fallback to generic AudioSet scores
-    if waveform.ndim == 1:
-        waveform = waveform[None, :]
-    (clipwise_output, embedding) = audio_tagger.inference(waveform)
-    scores_np = clipwise_output[0]
-    target_scores = {}
-    for target, idxs in target_indices.items():
-        if idxs:
-            target_scores[target] = float(np.max(scores_np[idxs]))
-        else:
-            target_scores[target] = 0.0
-    return target_scores
+    return {}
 
 
 def build_zero_scores():
-    if audio_labels is not None:
-        return {
-            label: 0.0
-            for label in (audio_labels[str(i)] for i in range(len(audio_labels)))
-            if is_allowed_audio_animal(label)
-        }
-    return {}
+    if yamnet_label_encoder is None:
+        return {}
+    try:
+        labels = list(getattr(yamnet_label_encoder, "classes_", []))
+    except Exception:
+        labels = []
+    return {str(label): 0.0 for label in labels if is_allowed_audio_animal(label)}
 
 
 def filter_audio_scores(raw_scores, threshold, min_top_score, min_margin):
