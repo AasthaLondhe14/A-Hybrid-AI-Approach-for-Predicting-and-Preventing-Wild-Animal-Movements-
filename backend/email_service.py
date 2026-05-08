@@ -13,8 +13,12 @@ RECIPIENT_EMAILS = [
     if email.strip()
 ]
 
+# Optional fixed coordinates to include in alert emails (set as env vars).
+ALERT_LATITUDE = os.getenv("ALERT_LATITUDE", "").strip()
+ALERT_LONGITUDE = os.getenv("ALERT_LONGITUDE", "").strip()
 
-def send_danger_alert_email(animal_name, detection_type, confidence):
+
+def send_danger_alert_email(animal_name, detection_type, confidence, latitude=None, longitude=None):
     """
     Send email notification when a dangerous animal is detected.
 
@@ -22,12 +26,35 @@ def send_danger_alert_email(animal_name, detection_type, confidence):
         animal_name: Name of the detected dangerous animal
         detection_type: 'video' or 'audio'
         confidence: Detection confidence score
+        latitude: Optional latitude to include in the email
+        longitude: Optional longitude to include in the email
     """
     if not SENDER_EMAIL or not SENDER_PASSWORD or not RECIPIENT_EMAILS:
         print("❌ Email not configured. Set SENDER_EMAIL, SENDER_PASSWORD, RECIPIENT_EMAILS.")
         return False
 
     try:
+        email_lat = str(latitude).strip() if latitude is not None else ALERT_LATITUDE
+        email_lng = str(longitude).strip() if longitude is not None else ALERT_LONGITUDE
+
+        location_rows = ""
+        if email_lat and email_lng:
+            maps_link = f"https://www.google.com/maps?q={email_lat},{email_lng}"
+            location_rows = f"""
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; background-color: #f9f9f9;"><strong>Latitude:</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{email_lat}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; background-color: #f9f9f9;"><strong>Longitude:</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">{email_lng}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; background-color: #f9f9f9;"><strong>Map:</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;"><a href="{maps_link}">{maps_link}</a></td>
+                    </tr>
+            """
+
         msg = MIMEMultipart()
         msg["From"] = SENDER_EMAIL
         msg["To"] = ", ".join(RECIPIENT_EMAILS)
@@ -58,6 +85,7 @@ def send_danger_alert_email(animal_name, detection_type, confidence):
                         <td style="padding: 10px; border: 1px solid #ddd; background-color: #f9f9f9;"><strong>Time:</strong></td>
                         <td style="padding: 10px; border: 1px solid #ddd;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
                     </tr>
+                    {location_rows}
                 </table>
                 <p style="margin-top: 20px; color: #666;">
                     This is an automated alert from your Wildlife Intrusion Detection System.

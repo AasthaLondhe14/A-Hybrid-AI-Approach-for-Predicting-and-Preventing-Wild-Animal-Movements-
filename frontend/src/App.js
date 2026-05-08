@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import "./App.css";
 import axios from "axios";
 import Contacts from "./Contacts";
@@ -11,12 +11,14 @@ function App() {
   const [videoScores, setVideoScores] = useState({});
   const [audioDetected, setAudioDetected] = useState([]);
   const [audioScores, setAudioScores] = useState({});
+  const [geoLocation, setGeoLocation] = useState({ lat: null, lng: null });
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [activeView, setActiveView] = useState("home");
   const audioRef = useRef(null);
   const previousDetectedRef = useRef([]);
+  // Backend Flask API base (same host as the frontend, port 5000).
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:5000`;
-  const ipCameraStreamUrl = "http://100.84.198.0:8080/video";
+  const ipCameraStreamUrl = "http://100.71.217.53:8080/video";
   const dangerousAnimals = [
     "tiger",
     "leopard",
@@ -51,18 +53,36 @@ function App() {
     .slice(0, 3)
     .map(([label, score]) => `${label} (${Math.round((score ?? 0) * 100)}%)`);
 
-  const finalIsDangerous = false;
-  const audioDangerousHigh = Object.entries(audioScores).some(
-    ([label, score]) =>
-      dangerousAnimals.includes(String(label).toLowerCase()) && score >= 0.8
-  );
-  const shouldAlert = isDangerous || finalIsDangerous || audioDangerousHigh;
+  // Play alert sound ONLY for dangerous animal detections from video.
+  const shouldAlertSound = isDangerous;
   const lastAlertRef = useRef(false);
+
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGeoLocation({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        });
+      },
+      () => {
+        // ignore location errors; email will be sent without coordinates
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+    );
+  }, []);
+
+  const geoParams = useMemo(() => {
+    if (geoLocation.lat == null || geoLocation.lng == null) return undefined;
+    return { params: { lat: geoLocation.lat, lng: geoLocation.lng } };
+  }, [geoLocation.lat, geoLocation.lng]);
 
   useEffect(() => {
     const fetchDetection = async () => {
       try {
-        const res = await axios.get(`${API_BASE}/detect`);
+        // GET /detect -> video detection (do not change response format).
+        const res = await axios.get(`${API_BASE}/detect`, geoParams);
         const isSuccess = res.data.status === "success";
         const newDetected = isSuccess ? (res.data.detected || []) : [];
         const newCounts = isSuccess ? (res.data.counts || {}) : {};
@@ -90,12 +110,13 @@ function App() {
     const interval = setInterval(fetchDetection, 10000);
 
     return () => clearInterval(interval);
-  }, [soundEnabled, API_BASE]); // re-run when soundEnabled changes
+  }, [soundEnabled, API_BASE, geoParams]); // re-run when soundEnabled changes
 
   useEffect(() => {
     const fetchAudioDetection = async () => {
       try {
-        const res = await axios.get(`${API_BASE}/audio_detect`);
+        // GET /audio_detect -> audio detection from IP camera audio stream.
+        const res = await axios.get(`${API_BASE}/audio_detect`, geoParams);
         const newAudioDetected = res.data.detected || [];
         const newAudioScores = res.data.scores || {};
         setAudioDetected(newAudioDetected);
@@ -109,17 +130,17 @@ function App() {
     const interval = setInterval(fetchAudioDetection, 10000);
 
     return () => clearInterval(interval);
-  }, [API_BASE]);
+  }, [API_BASE, geoParams]);
 
   useEffect(() => {
     if (!soundEnabled || !audioRef.current) return;
-    if (shouldAlert && !lastAlertRef.current) {
+    if (shouldAlertSound && !lastAlertRef.current) {
       audioRef.current.play().catch(() => {
         console.warn("🔇 User interaction required to play audio.");
       });
     }
-    lastAlertRef.current = shouldAlert;
-  }, [shouldAlert, soundEnabled]);
+    lastAlertRef.current = shouldAlertSound;
+  }, [shouldAlertSound, soundEnabled]);
 
   const handleEnableSound = () => {
     if (audioRef.current) {

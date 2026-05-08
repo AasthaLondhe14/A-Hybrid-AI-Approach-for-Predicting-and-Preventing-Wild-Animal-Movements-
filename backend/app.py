@@ -36,10 +36,10 @@ except Exception:
     pass
 
 # IP camera stream (update if your camera uses a different path)
-ip_camera_url = "http://100.84.198.0:8080/video"
+ip_camera_url = "http://100.71.217.53:8080/video"
 
 # IP camera audio stream (IP-only; no microphone fallback)
-ip_camera_audio_url = "http://100.84.198.0:8080/audio.wav"
+ip_camera_audio_url = "http://100.71.217.53:8080/audio.wav"
 
 YAMNET_SVM_MODEL_PATH = r"E:\\models\\YAMNet_SVM_optimized_model.pkl"
 YAMNET_SVM_LABEL_ENCODER_PATH = r"E:\\models\\YAMNet_SVM_optimized_label_encoder.pkl"
@@ -269,6 +269,9 @@ DANGEROUS_ANIMALS = [
 def is_dangerous_animal(animal_name):
     return any(dangerous in str(animal_name).lower() for dangerous in DANGEROUS_ANIMALS)
 
+# GET /detect
+# Video detection endpoint: reads frames from the IP camera stream, runs YOLO, returns detected labels/scores,
+# and stores results in MongoDB (video path only).
 @app.route("/detect", methods=["GET"])
 def detect_from_video():
     # Read directly from the IP camera stream with timeouts
@@ -392,12 +395,16 @@ def detect_from_video():
     }
     video_scores = {label: count / frame_count for label, count in filtered_counts.items()}
 
+    # Optional location passed from frontend (does not affect detection output)
+    req_lat = request.args.get("lat")
+    req_lng = request.args.get("lng")
+
     # Store detections in MongoDB (does not affect detection output)
     for animal, score in video_scores.items():
         is_dangerous = is_dangerous_animal(animal)
         store_detection(animal, "video", score, is_dangerous)
         if is_dangerous:
-            send_danger_alert_email(animal, "video", score)
+            send_danger_alert_email(animal, "video", score, latitude=req_lat, longitude=req_lng)
 
     return jsonify({
         "status": "success",
@@ -407,6 +414,9 @@ def detect_from_video():
         "frames": frame_count
     })
 
+# GET /audio_detect
+# Audio detection endpoint: pulls audio from the IP camera audio stream (via ffmpeg), runs YAMNet+SVM inference,
+# returns detected label(s)/scores, and stores results in MongoDB (audio path only).
 @app.route("/audio_detect", methods=["GET"])
 def detect_from_audio():
     if not ENABLE_AUDIO_DETECTION:
@@ -416,6 +426,10 @@ def detect_from_audio():
             "scores": build_zero_scores(),
             "message": "Audio detection is disabled"
         })
+    # Optional location passed from frontend
+    req_lat = request.args.get("lat")
+    req_lng = request.args.get("lng")
+
     seconds = int(request.args.get("seconds", 4))
     threshold = float(request.args.get("threshold", DEFAULT_AUDIO_THRESHOLD))
     silence_rms = float(request.args.get("silence_rms", DEFAULT_AUDIO_SILENCE_RMS))
@@ -483,7 +497,7 @@ def detect_from_audio():
             score = scores.get(animal, 0.0)
             store_detection(animal, "audio", score, is_dangerous)
             if is_dangerous:
-                send_danger_alert_email(animal, "audio", score)
+                send_danger_alert_email(animal, "audio", score, latitude=req_lat, longitude=req_lng)
 
         return jsonify({
             "status": "success",
@@ -500,6 +514,9 @@ def detect_from_audio():
         })
 
 
+# POST /predict-audio
+# File upload audio inference endpoint: accepts a user-provided audio file, runs YAMNet+SVM inference,
+# returns top prediction + confidence, and stores results in MongoDB (audio_file path only).
 @app.route("/predict-audio", methods=["POST"])
 def predict_audio():
     if "file" not in request.files:
@@ -536,12 +553,14 @@ def predict_audio():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# Route to serve local video file (optional fallback)
+# GET /video
+# Serves a local video file from backend/static as an optional fallback stream.
 @app.route("/video")
 def serve_video():
     return send_from_directory("static", video_filename)
 
-# Route to get detection history
+# GET /history
+# Returns recent detection history from MongoDB (both video + audio records).
 @app.route("/history", methods=["GET"])
 def get_history():
     try:
